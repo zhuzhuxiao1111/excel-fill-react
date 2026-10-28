@@ -41,42 +41,79 @@ export default function App() {
     };
   }, []);
 
-  // 1. 扫描当前网页表单
+  const addLog = (type, text) => {
+    const now = new Date().toTimeString().split(' ')[0];
+    setLogs(prev => [...prev.slice(-50), { time: now, type, text }]);
+  };
+
   const handleScanPage = () => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (!tabs[0]) return;
       chrome.tabs.sendMessage(tabs[0].id, { action: "SCAN_PAGE_FORMS" }, (res) => {
-        if (res && res.success) {
-          setPageFields(res.fields);
-          addLog('Sys', `成功识别当前网页表单，共 ${res.fields.length} 个控件`);
+        if (res && res.labels && res.labels.length > 0) {
+          setPageFields(res.labels);
+          addLog('Sys', `成功识别当前网页表单，共 ${res.labels.length} 个关键字段`);
+        } else if (res && res.fields && res.fields.length > 0) {
+          const fieldNames = res.fields.map(f => f.label);
+          setPageFields(fieldNames);
+          addLog('Sys', `成功识别当前网页表单，共 ${fieldNames.length} 个控件`);
         } else {
-          alert("未能识别，请确保当前页面是表单页并已刷新！");
+          alert("未能识别到表单项，请确保当前页面是表单页并已刷新！");
         }
       });
     });
   };
 
-  // 2. 上传 Excel 数据集
+  const handleDownloadTemplate = () => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (!tabs[0]) return;
+      chrome.tabs.sendMessage(tabs[0].id, { action: "SCAN_PAGE_FORMS" }, (res) => {
+        let headers = [];
+        if (res && res.labels && res.labels.length > 0) {
+          headers = res.labels;
+        } else if (res && res.fields && res.fields.length > 0) {
+          headers = res.fields.map(f => f.label);
+        } else {
+          headers = ["姓名", "性别", "所在城市", "证件类型", "证件号码", "国籍", "手机号", "电子邮箱", "出生时间", "参加工作时间", "工作年限", "学历学位", "职位类别", "职位名称", "供应商建议级别", "人员类型", "是否在职", "简历附件", "个人作品", "推荐理由"];
+        }
+
+        const ws = XLSX.utils.aoa_to_sheet([headers]);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, "数据录入模板");
+        XLSX.writeFile(wb, "智能填表助手_纯净导入模板.xlsx");
+        addLog('Sys', `已成功生成并下载纯净版模板 (.xlsx)，共 ${headers.length} 个列标题`);
+      });
+    });
+  };
+
+  // 3. 💡 升级版：上传 Excel 并对所有键名进行严格的去空格清洗
   const handleFileUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
       const data = new Uint8Array(event.target.result);
-      // 💡 关键：加上 cellDates: true 确保日期被正确解析
       const workbook = XLSX.read(data, { type: 'array', cellDates: true });
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
       const json = XLSX.utils.sheet_to_json(worksheet, { raw: false });
 
-      // 解析"映射" sheet：字段映射/值映射。两列(Excel侧|页面侧)默认字段映射；
-      // 三列(类型|Excel侧|页面侧)中 类型=值 的行为值映射
+      // 💡 核心清洗：去除 Excel 表头里自带的空格、换行符等隐藏字符
+      const cleanedJson = json.map(row => {
+        const newRow = {};
+        for (const [k, v] of Object.entries(row)) {
+          const cleanKey = k.replace(/[\r\n*：:\s]/g, '').trim();
+          newRow[cleanKey] = v;
+        }
+        return newRow;
+      });
+
       const fieldMapping = {}, valueMapping = {};
       const mapSheet = workbook.Sheets['映射'] || workbook.Sheets['mapping'] || workbook.Sheets['Mapping'];
       if (mapSheet) {
         const rows = XLSX.utils.sheet_to_json(mapSheet, { header: 1, raw: false });
         for (const r of rows) {
           const cells = (r || []).map(c => String(c ?? '').trim());
-          if (cells.some(c => /^类型$|页面侧|Excel侧/i.test(c))) continue; // 跳过表头行
+          if (cells.some(c => /^类型$|页面侧|Excel侧/i.test(c))) continue;
           if (cells.length >= 3 && cells[1] && cells[2]) {
             if (/^值$/i.test(cells[0])) valueMapping[cells[1]] = cells[2];
             else fieldMapping[cells[1]] = cells[2];
@@ -86,7 +123,7 @@ export default function App() {
         }
       }
       
-      const formatted = json.map((item, idx) => ({
+      const formatted = cleanedJson.map((item, idx) => ({
         id: idx + 1,
         ...item,
         _status: 'pending',
@@ -94,18 +131,12 @@ export default function App() {
       }));
 
       setDataset(formatted);
-      addLog('Sys', `成功解析 Excel，加载 ${formatted.length} 条待录入记录`);
       setMapping({ field: fieldMapping, value: valueMapping });
       const mF = Object.keys(fieldMapping).length, mV = Object.keys(valueMapping).length;
       addLog('Sys', `成功解析 Excel，加载 ${formatted.length} 条待录入记录${(mF || mV) ? `，映射: 字段${mF}条/值${mV}条` : ''}`);
       chrome.runtime.sendMessage({ action: "SET_DATASET", dataset: formatted, fieldMapping, valueMapping });
     };
     reader.readAsArrayBuffer(file);
-  };
-
-  const addLog = (type, text) => {
-    const now = new Date().toTimeString().split(' ')[0];
-    setLogs(prev => [...prev.slice(-50), { time: now, type, text }]);
   };
 
   const sendControl = (command) => {
@@ -127,7 +158,6 @@ export default function App() {
   return (
     <div style={{ padding: '12px', fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif', background: '#f8fafc', minHeight: '100vh', boxSizing: 'border-box' }}>
       
-      {/* 模块 1：页面表单智能识别 */}
       <div style={{ background: '#fff', borderRadius: '10px', padding: '12px', marginBottom: '12px', border: '1px solid #e2e8f0' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
           <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#1e293b' }}>🔍 1. 当前页面表单识别</span>
@@ -135,17 +165,24 @@ export default function App() {
             扫描识别
           </button>
         </div>
-        <div style={{ fontSize: '11px', color: '#64748b' }}>已识别控件: {pageFields.length} 个（可在控制台确认字段是否匹配）</div>
+        <div style={{ fontSize: '11px', color: '#64748b' }}>已识别控件/字段: {pageFields.length} 个</div>
       </div>
 
-      {/* 模块 2：Excel 数据集与队列 */}
       <div style={{ background: '#fff', borderRadius: '10px', padding: '12px', marginBottom: '12px', border: '1px solid #e2e8f0' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-          <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#1e293b' }}>📊 2. Excel 数据集 ({dataset.length}条){(Object.keys(mapping.field).length || Object.keys(mapping.value).length) ? ` · 映射 字段${Object.keys(mapping.field).length}/值${Object.keys(mapping.value).length}` : ''}</span>
-          <label style={{ fontSize: '11px', color: '#2563eb', cursor: 'pointer', background: '#eff6ff', padding: '3px 8px', borderRadius: '4px' }}>
-            上传 Excel
-            <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
-          </label>
+          <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#1e293b' }}>📊 2. Excel 数据集 ({dataset.length}条)</span>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button 
+              onClick={handleDownloadTemplate} 
+              style={{ fontSize: '11px', color: '#059669', cursor: 'pointer', background: '#ecfdf5', border: '1px solid #a7f3d0', padding: '3px 8px', borderRadius: '4px', fontWeight: 'bold' }}
+            >
+              📥 下载导入模板
+            </button>
+            <label style={{ fontSize: '11px', color: '#2563eb', cursor: 'pointer', background: '#eff6ff', border: '1px solid #bfdbfe', padding: '3px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+              上传 Excel
+              <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} style={{ display: 'none' }} />
+            </label>
+          </div>
         </div>
 
         <div style={{ maxHeight: '120px', overflowY: 'auto', border: '1px solid #f1f5f9', borderRadius: '6px' }}>
@@ -159,7 +196,7 @@ export default function App() {
             </thead>
             <tbody>
               {dataset.length === 0 ? (
-                <tr><td colSpan="3" style={{ textAlign: 'center', padding: '15px', color: '#94a3b8' }}>请上传 Excel 文件</td></tr>
+                <tr><td colSpan="3" style={{ textAlign: 'center', padding: '15px', color: '#94a3b8' }}>可先点击右上角“下载导入模板”填写数据后上传</td></tr>
               ) : (
                 dataset.map((row, idx) => {
                   const firstKey = Object.keys(row).find(k => !k.startsWith('_') && k !== 'id') || '数据';
@@ -181,7 +218,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* 模块 3：自动化执行控制台 */}
       <div style={{ background: '#fff', borderRadius: '10px', padding: '12px', marginBottom: '12px', border: '1px solid #e2e8f0' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
           <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#1e293b' }}>⚙️ 3. 自动化录入控制台</span>
@@ -196,7 +232,6 @@ export default function App() {
           <button onClick={() => sendControl('reset')} style={{ background: '#64748b', color: '#fff', border: 'none', padding: '8px 0', borderRadius: '6px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer' }}>重置</button>
         </div>
 
-        {/* 操作间隔设置 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px', background: '#f1f5f9', padding: '6px 10px', borderRadius: '6px' }}>
           <span style={{ fontSize: '11px', color: '#475569', whiteSpace: 'nowrap' }}>⏱ 操作间隔</span>
           <input
@@ -234,7 +269,6 @@ export default function App() {
           </button>
         )}
 
-        {/* 终端实况日志 */}
         <div style={{ background: '#0f172a', borderRadius: '8px', padding: '10px', height: '120px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '10px', color: '#38bdf8' }}>
           <div style={{ color: '#64748b', marginBottom: '4px', borderBottom: '1px solid #1e293b', paddingBottom: '2px' }}>&gt;_ 实况日志 (Terminal)</div>
           {logs.map((log, idx) => (

@@ -1,6 +1,6 @@
 ﻿{
   "manifest_version": 3,
-  "name": "多系统智能填表助手",
+  "name": "自动化填表助手",
   "version": "1.0.0",
   "description": "右侧边栏智能识别表单、Excel 批量自动录入提交与失败导出",
   "permissions": [

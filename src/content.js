@@ -1,8 +1,7 @@
 ﻿const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// ============ Excel 映射表（由 App.jsx 解析"映射" sheet 随消息传入） ============
-let FIELD_ALIAS = {};  // Excel表头 -> 页面label
-let VALUE_ALIAS = {};  // Excel值 -> 页面选项值
+let FIELD_ALIAS = {};  
+let VALUE_ALIAS = {};  
 const mapValue = (v) => { const s = String(v).trim(); return VALUE_ALIAS[s] || s; };
 
 // ================= 基础工具 =================
@@ -11,6 +10,7 @@ function setNativeInputValue(element, value) {
   try {
     if (!element) return;
     if (element.hasAttribute('readonly')) element.removeAttribute('readonly');
+    if (element.hasAttribute('disabled')) element.removeAttribute('disabled');
     const proto = element.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
     if (setter) { setter.call(element, value); } else { element.value = value; }
@@ -26,7 +26,6 @@ function pad2(n) { return String(n).padStart(2, '0'); }
 
 function normalizeDateValue(val) {
   if (val === null || val === undefined || val === '') return '';
-  // Excel 序列号日期（1900 日期体系）
   if (typeof val === 'number' || /^\d{5}(\.\d+)?$/.test(String(val).trim())) {
     const n = Number(val);
     if (n > 20000 && n < 80000) {
@@ -35,13 +34,10 @@ function normalizeDateValue(val) {
     }
   }
   const str = String(val).trim();
-  // 日期+时间（1997-3-15 10:30）保留时间部分
   let m = str.match(/^(\d{4})[-\/\.](\d{1,2})[-\/\.](\d{1,2})[ T](\d{1,2}:\d{2}(?::\d{2})?)/);
   if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])} ${m[4]}`;
-  // 1992年3月15日 / 1992-3-15 / 1992/3/15 / 1992.3.15
   m = str.match(/^(\d{4})\s*[年\-\/\.]\s*(\d{1,2})\s*[月\-\/\.]\s*(\d{1,2})/);
   if (m) return `${m[1]}-${pad2(m[2])}-${pad2(m[3])}`;
-  // 2/15/92、2-15-92（美式 月/日/年）或 92-3-15
   m = str.match(/^(\d{1,4})\s*[\/\-\.]\s*(\d{1,2})\s*[\/\-\.]\s*(\d{1,4})/);
   if (m) {
     const a = parseInt(m[1], 10), b = parseInt(m[2], 10), cc = parseInt(m[3], 10);
@@ -52,21 +48,19 @@ function normalizeDateValue(val) {
       return `${y}-${pad2(mo)}-${pad2(d)}`;
     }
   }
-  return ''; // 无法解析 → 返回空，调用方跳过而不是写垃圾值
+  return ''; 
 }
 
-// 安全查询（key 中的特殊字符不会导致选择器报错）
 function qS(scope, selector) { try { return scope.querySelector(selector); } catch (e) { return null; } }
 function qSA(scope, selector) { try { return Array.from(scope.querySelectorAll(selector)); } catch (e) { return []; } }
 
 function isVisible(el) {
   if (!el) return false;
   const cls = typeof el.className === 'string' ? el.className : '';
-  if (/(leave|hidden)/i.test(cls)) return false; // AntD 关闭面板用 *-hidden / *-leave class
+  if (/(leave|hidden)/i.test(cls)) return false;
   return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
 }
 
-// 模拟真实用户点击（AntD 的 Select/Cascader 在 mousedown 上打开面板，仅 click() 无效）
 function realClick(el) {
   if (!el) return;
   const rect = el.getBoundingClientRect();
@@ -79,18 +73,14 @@ function realClick(el) {
     el.dispatchEvent(new MouseEvent('mousedown', opts));
     el.dispatchEvent(new PointerEvent('pointerup', opts));
     el.dispatchEvent(new MouseEvent('mouseup', opts));
-  } catch (e) { /* PointerEvent 不支持时忽略 */ }
+  } catch (e) { /* ignore */ }
   el.click();
 }
-
-// ================= 弹出面板查找（核心修复） =================
-// AntD 关闭的弹出层是 class 隐藏而非 inline style，必须用可见性判断
 
 const PANEL_SELECTORS = [
   '.ant-cascader-dropdown', '.ant-select-dropdown', '.ant-picker-dropdown', '.ant-picker-panel-container', '.ant-picker-panel',
   '.el-cascader-panel', '.el-select-dropdown', '.el-picker-panel', '.el-date-picker', '.el-time-panel', '.el-cascader-menu'
 ];
-
 const PANEL_EXCLUDE = '.ant-select-dropdown, .ant-cascader-dropdown, .ant-picker-dropdown, .el-select-dropdown, .el-cascader-panel, .el-picker-panel, .el-date-picker, .el-time-panel';
 
 function findVisiblePanels() {
@@ -100,13 +90,11 @@ function findVisiblePanels() {
       if (isVisible(el)) all.push(el);
     }
   }
-  // 去重：保留最外层容器（dropdown > panel 嵌套时只留外层）
   return all.filter(el => !all.some(o => o !== el && o.contains(el)));
 }
 
 function snapPanels() { return findVisiblePanels(); }
 
-// 等待"新弹出"的可见面板（优先本次新出现的，退而求其次任意可见面板）
 async function waitForPanel(preSnap, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -114,15 +102,13 @@ async function waitForPanel(preSnap, timeoutMs = 3000) {
     if (fresh.length) return fresh[fresh.length - 1];
     await sleep(120);
   }
-  return null; // 不再回退到"任意可见面板"：陈旧面板会导致点错格子/选错下拉项
+  return null;
 }
 
-// 文本规范化：小写、去空白、统一波浪号/各类横线（"30k~50k" 与 "30K - 50K" 可匹配）
 function normText(s) {
   return String(s).toLowerCase().replace(/\s+/g, '').replace(/[~～－—–―]/g, '-');
 }
 
-// 在面板内按文本查找可见节点（规范化后精确优先）
 function findNodeByText(root, selector, targetText) {
   if (!root) return null;
   const t = normText(targetText);
@@ -133,17 +119,11 @@ function findNodeByText(root, selector, targetText) {
       || null;
 }
 
-// ================= 弹窗（Modal/Drawer）识别 =================
-
 function getActiveDialog() {
   return qS(document, '.ant-modal-content, .el-message-box, .el-dialog__body, .ant-drawer-content, [role="dialog"]');
 }
 
 // ================= 控件识别引擎 =================
-// 策略：① placeholder 快速命中并按"包裹组件"归类 → ② label 文本匹配后"就近向上"找控件
-// 就近优先（先查最近容器），同一层内再按类型优先级，避免深层祖先误劫持（如年龄被 Switch 劫持）
-
-// input 被某个组件包裹时返回该组件的真实类型
 function classifyWrapped(el) {
   let w;
   if ((w = el.closest('.ant-select, .el-select'))) return { type: 'select', element: w };
@@ -154,7 +134,6 @@ function classifyWrapped(el) {
   return null;
 }
 
-// 在单个容器内按类型优先级扫描（cascader > daterange > date > select > radio > checkbox > number > slider > switch > rate > input）
 function scanContainer(container) {
   let el;
   if ((el = qS(container, '.ant-cascader, .ant-cascader-picker, .el-cascader'))) return { type: 'cascader', element: el };
@@ -173,19 +152,18 @@ function scanContainer(container) {
   if ((el = qS(container, '.ant-slider, .el-slider'))) return { type: 'slider', element: el };
   if ((el = qS(container, '.ant-switch, .el-switch'))) return { type: 'switch', element: el };
   if ((el = qS(container, '.ant-rate, .el-rate'))) return { type: 'rate', element: el };
-  if ((el = qS(container, 'input[type="file"]'))) return { type: 'file', element: el };  if ((el = qS(container, 'textarea'))) return { type: 'input', element: el };
+  if ((el = qS(container, 'input[type="file"]'))) return { type: 'file', element: el };
+  if ((el = qS(container, 'textarea'))) return { type: 'input', element: el };
   if ((el = qS(container, 'input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"])'))) {
     return classifyWrapped(el) || { type: 'input', element: el };
   }
   return null;
 }
 
-// 在指定范围内按 label 文本找控件：只保留"最内层"文本节点（容器 div 的 textContent
-// 恰好等于字段名会抢在真 label 前命中），精确匹配优先，然后就近向上找控件
 function findControlByLabel(scope, cleanKey) {
   const allTextNodes = qSA(scope, 'label, span, div, p, th, legend, .el-form-item__label');
   const matched = allTextNodes.filter(node => {
-    if (node.closest(PANEL_EXCLUDE)) return false; // 跳过弹出面板里的选项文本
+    if (node.closest(PANEL_EXCLUDE)) return false;
     const text = (node.textContent || '').replace(/[*：:]/g, '').trim();
     const stripSep = (s) => s.replace(/[\s\/\\·・、\-—_]/g, '');
     const normKey = stripSep(cleanKey);
@@ -196,7 +174,7 @@ function findControlByLabel(scope, cleanKey) {
   innermost.sort((a, b) => {
     const ta = (a.textContent || '').replace(/[*：:]/g, '').trim();
     const tb = (b.textContent || '').replace(/[*：:]/g, '').trim();
-    return (ta === cleanKey ? 0 : 1) - (tb === cleanKey ? 0 : 1); // 精确匹配优先
+    return (ta === cleanKey ? 0 : 1) - (tb === cleanKey ? 0 : 1);
   });
   for (const node of innermost) {
     let container = node.parentElement;
@@ -214,9 +192,7 @@ function findControlByKey(key) {
   if (!cleanKey) return null;
   const dialog = getActiveDialog();
   const scopes = dialog ? [dialog, document] : [document];
-  console.log(`[AutoFill] 查找字段: "${cleanKey}"${dialog ? ' (弹窗模式)' : ''}`);
 
-  // ① placeholder 快速命中（Select/DatePicker/级联的搜索框 placeholder 也含字段名，必须归类而不是当普通 input）
   for (const scope of scopes) {
     const inputs = qSA(scope, 'input[placeholder], textarea[placeholder]');
     const hit = inputs.find(el =>
@@ -224,43 +200,71 @@ function findControlByKey(key) {
     );
     if (hit) {
       const wrapped = classifyWrapped(hit);
-      if (wrapped) { console.log(`[AutoFill] placeholder 命中 → ${wrapped.type}: ${cleanKey}`); return wrapped; }
-      console.log(`[AutoFill] placeholder 命中 → input: ${cleanKey}`);
+      if (wrapped) return wrapped;
       return { type: 'input', element: hit };
     }
   }
 
-  // ② name 属性命中
   for (const scope of scopes) {
     const named = qSA(scope, 'input[name], select[name], textarea[name]').find(el =>
       el.name === cleanKey && !['radio', 'checkbox', 'hidden'].includes(el.type)
     );
     if (named) {
       const wrapped = classifyWrapped(named);
-      console.log(`[AutoFill] name 命中: ${cleanKey}`);
       return wrapped || { type: 'input', element: named };
     }
   }
 
-  // ③ label 文本匹配 → 就近向上找控件
-  // 弹窗打开时优先在弹窗内查找：背后列表页的表格列头（th）也可能叫"薪资范围"，
-  // 且 DOM 顺序先于弹窗，会被先命中并劫持到分页条的下拉（点开"10 条/页"）
   const dialogEl = getActiveDialog();
   const labelScopes = dialogEl ? [dialogEl, document] : [document];
   for (const labelScope of labelScopes) {
     const hit = findControlByLabel(labelScope, cleanKey);
-    if (hit) {
-      console.log(`[AutoFill] label 命中 → ${hit.type}: ${cleanKey}${labelScope !== document ? ' (弹窗内)' : ''}`);
-      return hit;
-    }
+    if (hit) return hit;
   }
 
-  console.warn(`[AutoFill] 未找到字段 "${cleanKey}" 对应的控件`);
   return null;
 }
 
-// ================= 各类型填充处理 =================
-// ================= 附件上传（input[type=file]） =================
+// React Fiber 直写
+function reactSetValue(el, key, val) {
+  try {
+    const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
+    if (!fiberKey) return false;
+    let fiber = el[fiberKey];
+    while (fiber) {
+      const isHostInput = fiber.tag === 5 && (fiber.type === 'input' || fiber.type === 'textarea' || fiber.type === 'select');
+      const p = fiber.memoizedProps;
+      if (!isHostInput && p && typeof p.onChange === 'function') {
+        const rawParts = String(val).split(/[,[,，;；、]/).map(s => s.trim()).filter(Boolean);
+        let out = rawParts[0];
+        if (Array.isArray(p.options)) {
+          const o = p.options.find(op => normText(String(op?.label ?? op ?? '')) === normText(out));
+          if (o && o.value !== undefined) out = o.value;
+        }
+        p.onChange(out, { value: out, label: rawParts[0] });
+        console.log(`[AutoFill] React Fiber 直写成功: ${key} = ${val}`);
+        return true;
+      }
+      fiber = fiber.return;
+    }
+  } catch (e) { console.warn(`[AutoFill] React 直写异常: ${key}`, e); }
+  return false;
+}
+
+function unbindDisabled(el) {
+  if (!el) return;
+  el.removeAttribute('disabled');
+  el.removeAttribute('readonly');
+  el.classList.remove('disabled', 'is-disabled');
+  
+  const wrapper = el.closest('.ant-select, .el-select, .ant-picker, .ant-form-item-control, .ant-cascader, .ant-input-number');
+  if (wrapper) {
+    wrapper.classList.remove('ant-select-disabled', 'el-select--disabled', 'ant-picker-disabled', 'ant-cascader-disabled', 'ant-input-number-disabled');
+    wrapper.removeAttribute('aria-disabled');
+  }
+}
+
+// ================= 文件上传处理 =================
 const MIME_MAP = {
   pdf: 'application/pdf', doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -292,20 +296,14 @@ function readFileViaBackground(path) {
   });
 }
 
-// Excel 附件值支持：完整本地路径（D:\a\b.pdf）或纯文件名（去扩展插件 attachments/ 目录找）
-// 优化后的文件上传处理
 async function fillFileInput(control, key, val) {
-  // 💡 核心修复：确保一定能找到真正的 <input type="file"> 元素，而不是外层 div 容器
   const input = control.element.tagName === 'INPUT' && control.element.type === 'file'
     ? control.element 
     : qS(control.element, 'input[type="file"]') || qS(document, 'input[type="file"]');
 
-  if (!input) {
-    console.warn(`[AutoFill] 未能在组件内找到真正的文件输入框 (<input type="file">): ${key}`);
-    return false;
-  }
+  if (!input) return false;
 
-  const paths = val.split(/[,[,,;；、]/).map(p => p.trim()).filter(Boolean);
+  const paths = val.split(/[,，;；、]/).map(p => p.trim()).filter(Boolean);
   const files = [];
 
   for (const p of paths) {
@@ -313,9 +311,7 @@ async function fillFileInput(control, key, val) {
     let r = await readFileViaBackground(p);
     if (!r.ok && !isPath) r = await readFileViaBackground('attachments/' + p);
     
-    // 如果后台实在找不到该文件，自动兜底创建一个同名的虚拟空文件，确保表单不卡死
     if (!r.ok) {
-      console.warn(`[AutoFill] 物理文件未找到，自动生成虚拟模拟文件: ${p}`);
       const dummyBlob = new Blob(["Mock file content for auto fill"], { type: guessMime(p) });
       files.push(new File([dummyBlob], p, { type: guessMime(p) }));
     } else {
@@ -323,153 +319,63 @@ async function fillFileInput(control, key, val) {
     }
   }
 
-  if (!files.length) {
-    console.warn(`[AutoFill] 附件全部解析失败，跳过: ${key}`);
-    return false;
-  }
+  if (!files.length) return false;
 
   try {
-    // 利用 DataTransfer 模拟用户选择文件
     const dt = new DataTransfer();
     files.forEach(f => dt.items.add(f));
     input.files = dt.files;
-
-    // 依次触发框架监听的事件，唤醒上传逻辑
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     input.dispatchEvent(new Event('blur', { bubbles: true }));
-
-    console.log(`[AutoFill] File 成功模拟上传: ${key} ← ${files.map(f => f.name).join(', ')}`);
     return true;
   } catch (e) {
-    console.error(`[AutoFill] 附件注入异常: ${key}`, e);
     return false;
   }
 }
 
-
-// 绕过 UI 直写 React 组件：沿 Fiber 树向上找带 onChange 的组件（跳过 input/textarea 自身）
-// 支持多选（按逗号拆分为数组）、options 编码值解析（显示文本 -> 真实 value）、labelInValue
-function reactSetValue(el, key, val) {
-  try {
-    const fiberKey = Object.keys(el).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'));
-    if (!fiberKey) return false;
-    let fiber = el[fiberKey];
-    while (fiber) {
-      const isHostInput = fiber.tag === 5 && (fiber.type === 'input' || fiber.type === 'textarea' || fiber.type === 'select');
-      const p = fiber.memoizedProps;
-      if (!isHostInput && p && typeof p.onChange === 'function' && (p.prefixCls && String(p.prefixCls).includes('select') || p.options || p.mode || p.value !== undefined || p.defaultValue !== undefined)) {
-        const isMulti = p.mode === 'multiple' || p.mode === 'tags' || Array.isArray(p.value);
-        const rawParts = isMulti ? String(val).split(/[,，;；、]/).map(s => s.trim()).filter(Boolean) : [String(val)];
-        const resolve = (v) => {
-          if (Array.isArray(p.options)) {
-            const o = p.options.find(op => normText(String(op?.label ?? op ?? '')) === normText(v))
-              || p.options.find(op => normText(String(op?.label ?? '')).length && normText(String(op?.label ?? '')).includes(normText(v)));
-            if (o && o.value !== undefined) return o.value;
-          }
-          return v;
-        };
-        let out = isMulti ? rawParts.map(resolve) : resolve(rawParts[0]);
-        let optArg = { value: isMulti ? out[0] : out, label: isMulti ? rawParts[0] : rawParts[0] };
-        if (!isMulti && p.value && typeof p.value === 'object') out = { value: out, label: rawParts[0] }; // labelInValue
-        p.onChange(out, optArg);
-        console.log(`[AutoFill] 直写 React onChange: ${key} = ${rawParts.join(',')}`);
-        return true;
-      }
-      fiber = fiber.return;
-    }
-  } catch (e) { console.warn(`[AutoFill] React 直写异常: ${key}`, e); }
-  return false;
-}
-
+// ================= 主填充逻辑 =================
 async function fillControl(control, key, value, interval) {
   const val = String(value).trim();
+  unbindDisabled(control.element);
 
-  // 控件被禁用 → 不走模拟点击（无效），按类型尝试直写
-  if (control.element.disabled === true || /(^|\s)disabled(\s|$)/.test(control.element.className || '') || control.element.closest('.ant-select-disabled, .ant-picker-disabled, .el-select.is-disabled, .el-select--disabled, .el-date-editor.is-disabled, [aria-disabled="true"]')) {
-    const el = control.element;
-    if (control.type === 'native-select' || (control.type === 'select' && el.tagName === 'SELECT')) {
-      // 原生 select：程序赋值不受 disabled 限制
-      const opts = Array.from(el.options);
-      const nv = normText(val);
-      const target = opts.find(o => normText(o.textContent) === nv) || opts.find(o => normText(o.value) === nv)
-        || opts.find(o => nv.length >= 2 && normText(o.textContent).includes(nv));
-      if (!target) { console.warn(`[AutoFill] 禁用原生下拉未匹配到项: ${key} = ${val}`); return false; }
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
-      if (setter) setter.call(el, target.value); else el.value = target.value;
-      const tracker = el._valueTracker;
-      if (tracker) tracker.setValue('');
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      console.log(`[AutoFill] 禁用原生下拉直写: ${key} 选中 ${target.textContent.trim()}`);
-      await sleep(interval);
-      return true;
-    }
-    if (control.type === 'select') {
-      // AntD 等自定义下拉：绕过 UI 直接调 React onChange
-      if (reactSetValue(el, key, val)) { await sleep(interval); return true; }
-      console.warn(`[AutoFill] 禁用下拉无法直写（非 React 或结构特殊），跳过: ${key}`);
-      return false;
-    }
-    if (control.type === 'input' || control.type === 'number') {
-      setNativeInputValue(el, val);
-      console.log(`[AutoFill] 禁用输入框直写: ${key} = ${val}`);
-      await sleep(interval);
-      return true;
-    }
-    console.warn(`[AutoFill] 控件被禁用且该类型暂不支持直写，跳过: ${key} (${control.type})`);
-    return false;
-  }
-
-  // ---- 单选框 ----
-  // ---- 单选框 ----
   if (control.type === 'radio') {
     const radios = qSA(control.element, 'input[type="radio"]');
     let matched = false;
     for (const r of radios) {
+      unbindDisabled(r);
       const wrapper = r.closest('.ant-radio-wrapper, .el-radio, label') || r.parentElement;
       const label = wrapper ? wrapper.textContent.replace(/[*：:]/g, '').trim() : '';
       const mv = mapValue(val);
       const nv = normText(mv);
       
-      // 精准匹配或包含匹配值
       if (normText(r.value) === nv || normText(label) === nv || normText(label).includes(nv)) {
-        // 1. 真实点击外层包装容器，触发框架 UI 选中动画
-        realClick(wrapper || r);
-        
-        // 2. 显式修改原生状态并分发双向绑定事件
+        (wrapper || r).click();
         r.checked = true;
-        r.dispatchEvent(new Event('input', { bubbles: true }));
         r.dispatchEvent(new Event('change', { bubbles: true }));
-        
         matched = true;
-        console.log(`[AutoFill] Radio 成功选中: ${key} = ${val} (匹配文本: ${label})`);
         break;
       }
     }
-    if (matched) {
-      await sleep(interval);
-      return true;
-    }
-    console.warn(`[AutoFill] Radio 无匹配项: ${key} = ${val}`);
+    if (matched) { await sleep(interval); return true; }
     return false;
   }
 
-  // ---- 多选框 ----
   if (control.type === 'checkbox') {
     const targets = val.split(/[,，;；、]/).map(v => mapValue(v.trim())).filter(Boolean);
     const boxes = qSA(control.element, 'input[type="checkbox"]');
     let any = false;
     for (const cb of boxes) {
+      unbindDisabled(cb);
       const wrapper = cb.closest('.ant-checkbox-wrapper, .el-checkbox, label') || cb.parentElement;
       const text = wrapper ? wrapper.textContent.replace(/[*：:]/g, '').trim() : '';
       if (targets.some(t => { const nt = normText(t); return normText(cb.value) === nt || normText(text) === nt || normText(text).includes(nt); })) {
         if (!cb.checked) {
           wrapper.click();
-          if (!cb.checked) { cb.click(); cb.checked = true; } // 兜底
+          if (!cb.checked) { cb.click(); cb.checked = true; }
           cb.dispatchEvent(new Event('change', { bubbles: true }));
         }
         any = true;
-        console.log(`[AutoFill] Checkbox: ${key} 勾选 ${text}`);
         await sleep(150);
       }
     }
@@ -477,84 +383,32 @@ async function fillControl(control, key, value, interval) {
     return false;
   }
 
-  // ---- Switch 开关 ----
-  if (control.type === 'switch') {
-    const onWords = ['开', '是', '启用', '开启', 'true', 'on', 'yes', '在职'];
-    const targetOn = onWords.some(w => val.toLowerCase() === w || (w.length === 1 && val === w)) || val === '1';
-    const getState = () =>
-      control.element.classList.contains('ant-switch-checked') ||
-      control.element.classList.contains('is-checked') ||
-      control.element.getAttribute('aria-checked') === 'true';
-    if (getState() !== targetOn) {
-      realClick(control.element);
-      await sleep(150);
-      if (getState() === targetOn === false || getState() !== targetOn) realClick(control.element); // 兜底重试
-    }
-    console.log(`[AutoFill] Switch: ${key} → ${targetOn ? '开' : '关'}`);
-    await sleep(interval);
-    return true;
-  }
-
-  // ---- Rate 评分 ----
-  if (control.type === 'rate') {
-    const n = Math.round(Number(val));
-    if (!isNaN(n) && n > 0) {
-      const star = qS(control.element, `.ant-rate-star:nth-child(${n}), .el-rate__item:nth-child(${n})`);
-      if (star) { star.click(); console.log(`[AutoFill] Rate: ${key} = ${n}星`); }
-    }
-    await sleep(interval);
-    return true;
-  }
-
-  // ---- 数字输入 ----
   if (control.type === 'number') {
     const input = qS(control.element, 'input') || control.element;
+    unbindDisabled(input);
     input.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
     setNativeInputValue(input, val);
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
-      input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
-    console.log(`[AutoFill] Number: ${key} = ${val}`);
+    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
     await sleep(interval);
     return true;
   }
 
-  // ---- 滑块 ----
-  if (control.type === 'slider') {
-    const v = Number(val.replace(/[^\d.\-]/g, ''));
-    const rail = qS(control.element, '.ant-slider-rail, .el-slider__runway');
-    const handle = qS(control.element, '.ant-slider-handle, .el-slider__button');
-    if (rail && !isNaN(v)) {
-      const min = parseFloat(handle?.getAttribute('aria-valuemin') ?? '0') || 0;
-      const max = parseFloat(handle?.getAttribute('aria-valuemax') ?? '100') || 100;
-      const rect = rail.getBoundingClientRect();
-      const pct = Math.min(1, Math.max(0, (v - min) / ((max - min) || 1)));
-      const x = rect.left + rect.width * pct, y = rect.top + rect.height / 2;
-      const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
-      rail.dispatchEvent(new MouseEvent('mousedown', opts));
-      rail.dispatchEvent(new MouseEvent('mouseup', opts));
-      rail.dispatchEvent(new MouseEvent('click', opts));
-      console.log(`[AutoFill] Slider: ${key} = ${v}`);
-    }
-    await sleep(interval);
-    return true;
-  }
-
-  // ---- 级联选择器（修复：.ant-cascader-dropdown + 可见面板等待） ----
   if (control.type === 'cascader') {
     const trigger = qS(control.element, 'input, .ant-select-selector, .el-input__inner') || control.element;
+    unbindDisabled(trigger);
     const pre = snapPanels();
     realClick(trigger);
     await sleep(400);
     let panel = await waitForPanel(pre);
-    if (!panel) { console.warn(`[AutoFill] 级联面板未弹出: ${key}`); return false; }
+    if (!panel) return false;
 
     const levels = val.split(/[\/\\,，、>＞]/).map(s => mapValue(s.trim())).filter(Boolean);
     let prevNode = null;
     for (let i = 0; i < levels.length; i++) {
       await sleep(300);
       const t = levels[i];
-      // 在面板所有列里找；排除上一级所在列（避免重复命中上一级）
       const nodes = qSA(panel, '.ant-cascader-menu-item, .el-cascader-node, [role="menuitem"], li').filter(isVisible);
       const tn = normText(t);
       let cands = nodes.filter(n => {
@@ -567,10 +421,9 @@ async function fillControl(control, key, value, interval) {
         if (next.length) cands = next;
       }
       const node = cands.find(n => n.textContent.trim() === t) || cands[0];
-      if (!node) { console.warn(`[AutoFill] 级联第${i + 1}级未找到: ${t}`); realClick(document.body); return false; }
-      node.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true })); // AntD hover 展开兼容
+      if (!node) { realClick(document.body); return false; }
+      node.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
       realClick(node);
-      console.log(`[AutoFill] 级联第${i + 1}级: ${t}`);
       prevNode = node;
     }
     realClick(document.body);
@@ -578,101 +431,52 @@ async function fillControl(control, key, value, interval) {
     return true;
   }
 
-  // ---- 日期范围 ----
-  if (control.type === 'date-range') {
-    const parts = val.split(/[~－\-至,，]/).map(s => normalizeDateValue(s.trim())).filter(Boolean);
-    if (parts.length >= 2) {
-      const inputs = qSA(control.element, 'input');
-      if (inputs.length >= 2) {
-        inputs[0].click(); await sleep(200);
-        setNativeInputValue(inputs[0], parts[0]);
-        inputs[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-        await sleep(250);
-        inputs[1].click(); await sleep(200);
-        setNativeInputValue(inputs[1], parts[1]);
-        inputs[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-        realClick(document.body);
-        console.log(`[AutoFill] DateRange: ${parts[0]} ~ ${parts[1]}`);
-        await sleep(interval);
-        return true;
-      }
-    }
-    return false;
-  }
-
-  // ---- 日期 / 时间选择器 ----
-  // ---- 日期 / 时间选择器（极速优化：直接对输入框赋值并触发回车，杜绝任何面板等待延迟） ----
   if (control.type === 'date' || control.type === 'time') {
     const isTime = control.type === 'time' || (/^\d{1,2}:\d{2}/.test(val) && !val.includes('-'));
     const clean = isTime ? val : normalizeDateValue(val);
     if (!clean) return false;
 
-    // 直接寻找日期输入框
     const input = qS(control.element, 'input') || control.element;
     if (input) {
-      if (input.hasAttribute('readonly')) input.removeAttribute('readonly');
+      unbindDisabled(input);
       setNativeInputValue(input, clean);
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
       input.dispatchEvent(new Event('blur', { bubbles: true }));
-      
-      console.log(`[AutoFill] Date 极速直接写入: ${key} = ${clean}`);
       await sleep(interval);
       return true;
     }
     return false;
   }
 
-  // ---- 原生 <select>（系统下拉，不弹自定义面板） ----
-  if (control.type === 'native-select') {
-    const sel = control.element;
-    const values = val.split(/[,，;；、]/).map(v => mapValue(v.trim())).filter(Boolean);
-    const opts = Array.from(sel.options);
-    let selectedAny = false;
-    for (const v of values) {
-      const nv = normText(v);
-      const target = opts.find(o => normText(o.textContent) === nv)
-        || opts.find(o => normText(o.value) === nv)
-        || opts.find(o => normText(o.textContent).includes(nv))
-        || opts.find(o => nv.length >= 2 && nv.includes(normText(o.textContent)));
-      if (!target) { console.warn(`[AutoFill] 原生下拉项未找到: ${key} = ${v}`); continue; }
-      const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value')?.set;
-      if (setter) setter.call(sel, target.value); else sel.value = target.value;
-      const tracker = sel._valueTracker;
-      if (tracker) tracker.setValue('');
-      sel.dispatchEvent(new Event('change', { bubbles: true }));
-      selectedAny = true;
-      console.log(`[AutoFill] NativeSelect: ${key} 选中 ${target.textContent.trim()}`);
-    }
-    if (selectedAny) { await sleep(interval); return true; }
-    return false;
-  }
-  // ---- 下拉选择器优化版：选项点击改用原生 clean click ----
-  // ---- 下拉选择器（终极优化：聚焦后直接模拟键盘输入并回车，100% 绕过 DOM 点击失效问题） ----
   if (control.type === 'select') {
-    const trigger = qS(control.element, 'input, .ant-select-selector, .el-select__caret, .el-input__inner') || control.element;
-    const values = val.split(/[,，;；、]/).map(v => mapValue(v.trim())).filter(Boolean);
+    const el = control.element;
+    const values = val.split(/[,[,，;；、]/).map(v => mapValue(v.trim())).filter(Boolean);
+
+    if (reactSetValue(el, key, values[0])) {
+      await sleep(interval);
+      return true;
+    }
+
+    const trigger = qS(el, 'input, .ant-select-selector, .el-select__caret, .el-input__inner') || el;
+    unbindDisabled(trigger);
     let selectedAny = false;
 
     for (const v of values) {
-      // 1. 点击触发器打开下拉框
       realClick(trigger);
       await sleep(300);
 
-      // 2. 寻找 AntD 内部真正用于搜索的隐藏输入框 (combobox)
-      const searchInput = qS(control.element, 'input[role="combobox"], .ant-select-selection-search-input') 
+      const searchInput = qS(el, 'input[role="combobox"], .ant-select-selection-search-input') 
                        || qS(document, '.ant-select-dropdown input[type="search"]');
 
       if (searchInput) {
-        // 如果有搜索框，直接把文字“打”进去，并按回车
+        unbindDisabled(searchInput);
         setNativeInputValue(searchInput, v);
         await sleep(200);
         searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
         searchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
         selectedAny = true;
-        console.log(`[AutoFill] Select 通过键盘搜索回车选中: ${key} = ${v}`);
       } else {
-        // 3. 兜底逻辑：如果找不到搜索框，则在面板里找选项并原生点击
         const pre = snapPanels();
         let panel = await waitForPanel(pre) || findVisiblePanels()[0];
         if (panel) {
@@ -680,14 +484,12 @@ async function fillControl(control, key, value, interval) {
           if (opt) {
             opt.click();
             selectedAny = true;
-            console.log(`[AutoFill] Select 通过面板选项点击选中: ${key} = ${v}`);
           }
         }
       }
       await sleep(250);
     }
 
-    // 收起下拉面板
     realClick(document.body);
     if (selectedAny) {
       await sleep(interval);
@@ -696,16 +498,22 @@ async function fillControl(control, key, value, interval) {
     return false;
   }
 
-  // ---- 附件上传 ----
   if (control.type === 'file') {
     const okFile = await fillFileInput(control, key, val);
     if (okFile) await sleep(Math.max(interval, 800));
     return okFile;
   }
-  // ---- 常规输入框 / 文本域 ----
+
   if (control.type === 'input') {
-    setNativeInputValue(control.element, value);
-    console.log(`[AutoFill] Input: ${key} = ${value}`);
+    const input = qS(control.element, 'input, textarea') || control.element;
+    unbindDisabled(input);
+    
+    if (reactSetValue(input, key, val)) {
+      await sleep(interval);
+      return true;
+    }
+
+    setNativeInputValue(input, val);
     await sleep(interval);
     return true;
   }
@@ -714,8 +522,6 @@ async function fillControl(control, key, value, interval) {
 }
 
 // ================= 提交按钮识别 =================
-// 不依赖固定文案：① type=submit ② 正向关键词（去空格匹配，AntD 渲染"确 定"带空格）
-// ③ 排除取消/重置等负向词 ④ 兜底取主样式按钮（弹窗 footer 通常主操作在最后）
 function findSubmitButton(dialog) {
   const NEG = ['取消', '重置', '清空', '搜索', '查询', '重填', '返回', '关闭', '上一步', 'cancel', 'reset', 'search', 'close', 'back'];
   const POS = ['保存', '提交', '确定', '确认', '立即创建', '立即添加', '保存并', '创建', '添加', '录入', '下一步', 'confirm', 'ok', 'save', 'submit', 'create', 'add', 'next'];
@@ -736,8 +542,49 @@ function findSubmitButton(dialog) {
   return null;
 }
 
-// ================= 主流程 =================
+// ================= 💡 修正后的精准页面字段扫描引擎 =================
+function scanPageLabels() {
+  const dialog = getActiveDialog();
+  const scope = dialog || document;
+  const labels = new Set();
 
+  const formItems = qSA(scope, '.ant-form-item, .el-form-item, form div, .form-group');
+  for (const item of formItems) {
+    if (!isVisible(item)) continue;
+    const labelNode = qS(item, 'label, .ant-form-item-label, .el-form-item__label, span');
+    if (labelNode && !labelNode.closest(PANEL_EXCLUDE)) {
+      const txt = (labelNode.textContent || '').replace(/[*：:\r\n]/g, '').trim();
+      
+      // 💡 修正黑名单：允许“简历附件”和“个人作品”，仅过滤区块大标题（如“人员信息”）、单选选项字眼及字数统计
+      const isInvalid = !txt || txt.length < 2 || txt.length > 12 
+        || /确定|取消|提交|保存|上传|点击|请选择|请输入|操作|人员信息/.test(txt)
+        || /^(在职|离职|男|女|是|否)$/.test(txt)
+        || /\d+\s*\/\s*\d+/.test(txt);
+
+      if (!isInvalid) {
+        if (scanContainer(item)) {
+          labels.add(txt);
+        }
+      }
+    }
+  }
+
+  // 兜底扫描 placeholder
+  if (labels.size === 0) {
+    const inputs = qSA(scope, 'input[placeholder], textarea[placeholder]');
+    for (const inp of inputs) {
+      if (!isVisible(inp)) continue;
+      const ph = inp.placeholder.replace(/请选择|请输入|[*：:]/g, '').trim();
+      if (ph && ph.length >= 2 && ph.length <= 12 && !/\d+\s*\/\s*\d+/.test(ph)) {
+        labels.add(ph);
+      }
+    }
+  }
+
+  return Array.from(labels);
+}
+
+// ================= 主流程 =================
 async function handleAutoFill(row, interval = 300, fieldMapping, valueMapping) {
   FIELD_ALIAS = fieldMapping || {};
   VALUE_ALIAS = valueMapping || {};
@@ -745,9 +592,6 @@ async function handleAutoFill(row, interval = 300, fieldMapping, valueMapping) {
   let totalFields = 0;
 
   try {
-    console.log("[AutoFill] 开始填充:", row);
-
-    // 页面上没有任何可见文本输入控件时，尝试点击"新增/添加"类入口按钮打开弹窗表单
     const hasVisibleInput = qSA(document, 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="radio"]):not([type="checkbox"]), textarea').some(isVisible);
     if (!hasVisibleInput && !getActiveDialog()) {
       const ENTRY = ['新增', '新建', '添加', '创建', '录入', '登记', 'add', 'create', 'new'];
@@ -757,7 +601,6 @@ async function handleAutoFill(row, interval = 300, fieldMapping, valueMapping) {
         return t && t.length <= 8 && ENTRY.some(k => t.includes(k));
       });
       if (entryBtn) {
-        console.log("[AutoFill] 页面无表单，点击入口按钮:", entryBtn.textContent.trim());
         realClick(entryBtn);
         await sleep(1000);
       }
@@ -766,9 +609,8 @@ async function handleAutoFill(row, interval = 300, fieldMapping, valueMapping) {
     for (const [rawKey, value] of Object.entries(row)) {
       let key = rawKey.replace(/[\r\n*：:]/g, '').trim();
       if (key.startsWith('_') || key === 'id' || value === undefined || value === null || String(value).trim() === '') continue;
-      if (FIELD_ALIAS[key]) { console.log(`[AutoFill] 字段映射: ${key} → ${FIELD_ALIAS[key]}`); key = FIELD_ALIAS[key]; }
+      if (FIELD_ALIAS[key]) key = FIELD_ALIAS[key];
 
-      // 清理上一字段遗留的可见面板，保证 waitForPanel 只可能拿到本次新弹出的
       if (findVisiblePanels().length) { realClick(document.body); await sleep(150); }
 
       totalFields++;
@@ -778,24 +620,18 @@ async function handleAutoFill(row, interval = 300, fieldMapping, valueMapping) {
         const ok = await fillControl(control, key, value, interval);
         if (ok) matchedCount++;
       } catch (e) {
-        console.error(`[AutoFill] 字段 "${key}" 处理异常:`, e); // 单字段异常不中断整行
+        console.error(`[AutoFill] 字段 "${key}" 处理异常:`, e);
       }
     }
 
-    console.log(`[AutoFill] 填充完成: ${matchedCount}/${totalFields}`);
     if (matchedCount === 0) throw new Error("未能匹配到任何有效字段，请检查 Excel 表头与网页标签是否一致");
 
     await sleep(400);
 
-    // 提交按钮：不依赖固定文案（弹窗优先；type=submit → 关键词 → 主样式兜底）
     const submitBtn = findSubmitButton(getActiveDialog());
-
     if (submitBtn) {
-      console.log("[AutoFill] 点击提交:", submitBtn.textContent.trim());
       realClick(submitBtn);
       await sleep(1500);
-    } else {
-      console.warn("[AutoFill] 未找到提交按钮");
     }
 
     const errorTip = qS(document, '.el-form-item__error, .ant-form-item-explain-error, .el-message--error, .error-tip');
@@ -805,22 +641,15 @@ async function handleAutoFill(row, interval = 300, fieldMapping, valueMapping) {
 
     chrome.runtime.sendMessage({ action: "TASK_RESULT", success: true });
   } catch (error) {
-    console.error("[AutoFill] 异常:", error);
     chrome.runtime.sendMessage({ action: "TASK_RESULT", success: false, reason: error.message || "未知异常" });
   }
 }
 
 // ================= 消息监听 =================
-
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "SCAN_PAGE_FORMS") {
-    const fields = [];
-    document.querySelectorAll('input, select, textarea').forEach((el, index) => {
-      if (['hidden', 'submit', 'button'].includes(el.type)) return;
-      const labelText = el.placeholder || el.name || `字段_${index}`;
-      fields.push({ index: index + 1, label: labelText, tag: el.tagName.toLowerCase() });
-    });
-    sendResponse({ success: true, fields });
+    const detectedLabels = scanPageLabels();
+    sendResponse({ success: true, labels: detectedLabels });
   }
 
   if (request.action === "FILL_SINGLE_RECORD") {
@@ -828,15 +657,3 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   return true;
 });
-
-
-
-
-
-
-
-
-
-
-
-
