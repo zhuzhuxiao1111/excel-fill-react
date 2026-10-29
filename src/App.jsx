@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef } from 'react';
+﻿﻿import React, { useState, useEffect, useRef } from 'react';
 import * as XLSX from 'xlsx';
 
 export default function App() {
@@ -50,13 +50,11 @@ export default function App() {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (!tabs[0]) return;
       chrome.tabs.sendMessage(tabs[0].id, { action: "SCAN_PAGE_FORMS" }, (res) => {
-        if (res && res.labels && res.labels.length > 0) {
-          setPageFields(res.labels);
-          addLog('Sys', `成功识别当前网页表单，共 ${res.labels.length} 个关键字段`);
-        } else if (res && res.fields && res.fields.length > 0) {
-          const fieldNames = res.fields.map(f => f.label);
-          setPageFields(fieldNames);
-          addLog('Sys', `成功识别当前网页表单，共 ${fieldNames.length} 个控件`);
+        const fields = (res && res.fields) || [];
+        if (fields.length > 0) {
+          setPageFields(fields);
+          const disabledCount = fields.filter(f => f.disabled).length;
+          addLog('Sys', `成功识别当前网页表单，共 ${fields.length} 个字段${disabledCount ? `（其中 ${disabledCount} 个为禁用/只读）` : ''}`);
         } else {
           alert("未能识别到表单项，请确保当前页面是表单页并已刷新！");
         }
@@ -68,20 +66,30 @@ export default function App() {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (!tabs[0]) return;
       chrome.tabs.sendMessage(tabs[0].id, { action: "SCAN_PAGE_FORMS" }, (res) => {
-        let headers = [];
-        if (res && res.labels && res.labels.length > 0) {
-          headers = res.labels;
-        } else if (res && res.fields && res.fields.length > 0) {
-          headers = res.fields.map(f => f.label);
-        } else {
-          headers = ["姓名", "性别", "所在城市", "证件类型", "证件号码", "国籍", "手机号", "电子邮箱", "出生时间", "参加工作时间", "工作年限", "学历学位", "职位类别", "职位名称", "供应商建议级别", "人员类型", "是否在职", "简历附件", "个人作品", "推荐理由"];
+        let fields = (res && res.fields) || [];
+        if (!fields.length && res && res.labels) fields = res.labels.map(l => ({ label: l, disabled: false }));
+        if (!fields.length) {
+          fields = ["姓名", "性别", "所在城市", "证件类型", "证件号码", "国籍", "手机号", "电子邮箱", "出生时间", "参加工作时间", "工作年限", "学历学位", "职位类别", "职位名称", "供应商建议级别", "人员类型", "是否在职", "简历附件", "个人作品", "推荐理由"]
+            .map(l => ({ label: l, disabled: false }));
         }
 
+        // 禁用字段：直接跟在表头后面标注，导入解析时会自动剥掉（不影响自动录入识别）
+        const headers = fields.map(f => f.disabled ? `${f.label}(禁用)` : f.label);
         const ws = XLSX.utils.aoa_to_sheet([headers]);
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "数据录入模板");
-        XLSX.writeFile(wb, "智能填表助手_纯净导入模板.xlsx");
-        addLog('Sys', `已成功生成并下载纯净版模板 (.xlsx)，共 ${headers.length} 个列标题`);
+        XLSX.utils.book_append_sheet(wb, ws, "数据录入");
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, '0');
+        // Windows 文件名不支持冒号，时分用 '-' 分隔：导入模板_2026-10-29 11-46.xlsx
+        const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}-${pad(now.getMinutes())}`;
+        const fileName = `导入模板_${stamp}.xlsx`;
+        XLSX.writeFile(wb, fileName);
+
+        const disabledNames = fields.filter(f => f.disabled).map(f => f.label);
+        addLog('Sys', `已生成模板 ${fileName}，共 ${headers.length} 个列标题`);
+        if (disabledNames.length) {
+          addLog('Sys', `⚠️ 页面上为禁用/只读的字段已在表头标注"(禁用)"：${disabledNames.join('、')}`);
+        }
       });
     });
   };
@@ -97,11 +105,15 @@ export default function App() {
       const worksheet = workbook.Sheets[workbook.SheetNames[0]];
       const json = XLSX.utils.sheet_to_json(worksheet, { raw: false });
 
-      // 💡 核心清洗：去除 Excel 表头里自带的空格、换行符等隐藏字符
+      // 💡 核心清洗：剥离表头的"(禁用)"标注 + 去除空格、换行符等隐藏字符
       const cleanedJson = json.map(row => {
         const newRow = {};
         for (const [k, v] of Object.entries(row)) {
-          const cleanKey = k.replace(/[\r\n*：:\s]/g, '').trim();
+          const cleanKey = String(k)
+            .replace(/[（(]\s*(禁用|只读|disabled)\s*[)）]/gi, '')
+            .replace(/[\r\n*：:\s]/g, '')
+            .trim();
+          if (!cleanKey) continue;
           newRow[cleanKey] = v;
         }
         return newRow;
@@ -166,6 +178,11 @@ export default function App() {
           </button>
         </div>
         <div style={{ fontSize: '11px', color: '#64748b' }}>已识别控件/字段: {pageFields.length} 个</div>
+        {pageFields.filter(f => f.disabled).length > 0 && (
+          <div style={{ fontSize: '11px', color: '#b45309', marginTop: '4px', lineHeight: 1.5 }}>
+            ⚠️ 禁用/只读字段（下载模板时表头会标注"(禁用)"）：{pageFields.filter(f => f.disabled).map(f => f.label).join('、')}
+          </div>
+        )}
       </div>
 
       <div style={{ background: '#fff', borderRadius: '10px', padding: '12px', marginBottom: '12px', border: '1px solid #e2e8f0' }}>
@@ -274,7 +291,7 @@ export default function App() {
           {logs.map((log, idx) => (
             <div key={idx} style={{ marginBottom: '3px', wordBreak: 'break-all' }}>
               <span style={{ color: '#64748b' }}>[{log.time}]</span>{' '}
-              <span style={{ color: log.type === 'Error' ? '#f87171' : log.type === 'Success' ? '#4ade80' : '#cbd5e1' }}>
+              <span style={{ color: log.type === 'Error' ? '#f87171' : log.type === 'Warn' ? '#fbbf24' : log.type === 'Success' ? '#4ade80' : '#cbd5e1' }}>
                 [{log.type}] {log.text}
               </span>
             </div>

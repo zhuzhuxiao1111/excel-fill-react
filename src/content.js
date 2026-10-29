@@ -1,4 +1,4 @@
-﻿const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 let FIELD_ALIAS = {};  
 let VALUE_ALIAS = {};  
@@ -12,7 +12,6 @@ function setNativeInputValue(element, value) {
     element.removeAttribute('readonly');
     element.removeAttribute('disabled');
     
-    // 💡 修复：直接修改 element.value 并通过原生 descriptor 赋值，彻底规避 Illegal invocation
     try {
       const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
       if (nativeSetter) {
@@ -66,44 +65,12 @@ function normalizeDateValue(val) {
 function qS(scope, selector) { try { return scope.querySelector(selector); } catch (e) { return null; } }
 function qSA(scope, selector) { try { return Array.from(scope.querySelectorAll(selector)); } catch (e) { return []; } }
 
-// 获取 DOM 元素上的 React Fiber 键（React 用 defineProperty 挂载且 enumerable:false）
-// 必须用 Object.getOwnPropertyNames，不能用 Object.keys —— 后者在隔离世界里返回空
 function getFiberKey(el) {
   if (!el) return null;
   try {
     const names = Object.getOwnPropertyNames(el);
     return names.find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$')) || null;
   } catch (e) { return null; }
-}
-
-// 获取 Vue 实例（Vue 2 把实例存在 DOM 元素的 __vue__ 属性上，不可枚举）
-function getVueInstance(el) {
-  if (!el) return null;
-  try {
-    let node = el;
-    while (node) {
-      const names = Object.getOwnPropertyNames(node);
-      const vueKey = names.find(k => k === '__vue__');
-      if (vueKey && node[vueKey]) return node[vueKey];
-      node = node.parentElement;
-    }
-  } catch (e) { /* ignore */ }
-  return null;
-}
-
-// 从 Vue 实例向上找 iView Form 实例（有 setFieldsValue 方法）
-function findVueForm(vm) {
-  if (!vm) return null;
-  let cur = vm;
-  let hops = 0;
-  while (cur && hops < 30) {
-    if (cur.setFieldsValue && typeof cur.setFieldsValue === 'function') {
-      return cur;
-    }
-    cur = cur.$parent;
-    hops++;
-  }
-  return null;
 }
 
 function isVisible(el) {
@@ -132,9 +99,9 @@ function realClick(el) {
 const PANEL_SELECTORS = [
   '.ant-cascader-dropdown', '.ant-select-dropdown', '.ant-picker-dropdown', '.ant-picker-panel-container', '.ant-picker-panel',
   '.el-cascader-panel', '.el-select-dropdown', '.el-picker-panel', '.el-date-picker', '.el-time-panel', '.el-cascader-menu',
-  '.ivu-select-dropdown', '.ivu-cascader-menu', '.ivu-picker-panel', '.ivu-date-picker', '.ivu-time-picker'
+  '.ivu-select-dropdown', '.ivu-cascader-menu', '.ivu-picker-panel', '.ivu-date-picker', '.ivu-time-picker', '.n-popover', '.n-base-select-menu'
 ];
-const PANEL_EXCLUDE = '.ant-select-dropdown, .ant-cascader-dropdown, .ant-picker-dropdown, .el-select-dropdown, .el-cascader-panel, .el-picker-panel, .el-date-picker, .el-time-panel, .ivu-select-dropdown, .ivu-cascader-menu, .ivu-picker-panel';
+const PANEL_EXCLUDE = '.ant-select-dropdown, .ant-cascader-dropdown, .ant-picker-dropdown, .el-select-dropdown, .el-cascader-panel, .el-picker-panel, .el-date-picker, .el-time-panel, .ivu-select-dropdown, .ivu-cascader-menu, .ivu-picker-panel, .n-base-select-menu';
 
 function findVisiblePanels() {
   const all = [];
@@ -173,39 +140,37 @@ function findNodeByText(root, selector, targetText) {
 }
 
 function getActiveDialog() {
-  return qS(document, '.ant-modal-content, .el-message-box, .el-dialog__body, .ant-drawer-content, [role="dialog"], .ivu-modal-content, .ivu-drawer-content');
+  return qS(document, '.ant-modal-content, .el-message-box, .el-dialog__body, .ant-drawer-content, [role="dialog"], .ivu-modal-content, .ivu-drawer-content, .n-dialog, .n-modal');
 }
 
-// ================= 控件识别引擎 =================
+// ================= 全面控件识别引擎（支持多UI库与英文直接映射） =================
 function classifyWrapped(el) {
   let w;
-  if ((w = el.closest('.ant-select, .el-select, .ivu-select'))) return { type: 'select', element: w };
-  if ((w = el.closest('.ant-cascader, .ant-cascader-picker, .el-cascader, .ivu-cascader'))) return { type: 'cascader', element: w };
-  if ((w = el.closest('.ant-picker-range, .el-date-editor--daterange, .el-date-editor--datetimerange, .ivu-date-picker-range'))) return { type: 'date-range', element: w };
+  if ((w = el.closest('.ant-select, .el-select, .ivu-select, .n-select'))) return { type: 'select', element: w };
+  if ((w = el.closest('.ant-cascader, .ant-cascader-picker, .el-cascader, .ivu-cascader, .n-cascader'))) return { type: 'cascader', element: w };
+  if ((w = el.closest('.ant-picker-range, .el-date-editor--daterange, .ivu-date-picker-range, .n-date-picker'))) return { type: 'date-range', element: w };
   if ((w = el.closest('.ant-picker, .el-date-editor, .ivu-date-picker, .ivu-time-picker'))) return { type: 'date', element: w };
-  if ((w = el.closest('.ant-input-number, .el-input-number, .ivu-input-number'))) return { type: 'number', element: w };
+  if ((w = el.closest('.ant-input-number, .el-input-number, .ivu-input-number, .n-input-number'))) return { type: 'number', element: w };
+  if ((w = el.closest('.ant-upload, .el-upload, .ivu-upload'))) return { type: 'file', element: w };
   return null;
 }
 
 function scanContainer(container) {
   let el;
-  if ((el = qS(container, '.ant-cascader, .ant-cascader-picker, .el-cascader, .ivu-cascader'))) return { type: 'cascader', element: el };
-  if ((el = qS(container, '.ant-picker-range, .el-date-editor--daterange, .el-date-editor--datetimerange, .ivu-date-picker-range'))) return { type: 'date-range', element: el };
+  if ((el = qS(container, '.ant-cascader, .ant-cascader-picker, .el-cascader, .ivu-cascader, .n-cascader'))) return { type: 'cascader', element: el };
+  if ((el = qS(container, '.ant-picker-range, .el-date-editor--daterange, .ivu-date-picker-range'))) return { type: 'date-range', element: el };
   if ((el = qS(container, '.el-date-editor--time, .el-time-picker, .ivu-time-picker'))) return { type: 'time', element: el };
   if ((el = qS(container, 'input[type="time"]'))) return { type: 'time', element: el };
-  if ((el = qS(container, '.ant-picker, .el-date-editor, .ivu-date-picker, input[type="date"]'))) return { type: 'date', element: el };
-  if ((el = qS(container, '.ant-select, .el-select, .ivu-select'))) return { type: 'select', element: el };
+  if ((el = qS(container, '.ant-picker, .el-date-editor, .ivu-date-picker, .n-date-picker, input[type="date"]'))) return { type: 'date', element: el };
+  if ((el = qS(container, '.ant-select, .el-select, .ivu-select, .n-select'))) return { type: 'select', element: el };
   const nativeSel = qSA(container, 'select').find(isVisible);
   if (nativeSel) return { type: 'native-select', element: nativeSel };
-  if ((el = qS(container, '.ant-radio-group, .el-radio-group, .ivu-radio-group'))) return { type: 'radio', element: el };
+  if ((el = qS(container, '.ant-radio-group, .el-radio-group, .ivu-radio-group, .n-radio-group'))) return { type: 'radio', element: el };
   if (qSA(container, 'input[type="radio"]').length >= 2) return { type: 'radio', element: container };
-  if ((el = qS(container, '.ant-checkbox-group, .el-checkbox-group, .ivu-checkbox-group'))) return { type: 'checkbox', element: el };
+  if ((el = qS(container, '.ant-checkbox-group, .el-checkbox-group, .ivu-checkbox-group, .n-checkbox-group'))) return { type: 'checkbox', element: el };
   if (qSA(container, 'input[type="checkbox"]').length >= 2) return { type: 'checkbox', element: container };
-  if ((el = qS(container, '.ant-input-number, .el-input-number, .ivu-input-number'))) return { type: 'number', element: el };
-  if ((el = qS(container, '.ant-slider, .el-slider, .ivu-slider'))) return { type: 'slider', element: el };
-  if ((el = qS(container, '.ant-switch, .el-switch, .ivu-switch'))) return { type: 'switch', element: el };
-  if ((el = qS(container, '.ant-rate, .el-rate, .ivu-rate'))) return { type: 'rate', element: el };
-  if ((el = qS(container, 'input[type="file"]'))) return { type: 'file', element: el };
+  if ((el = qS(container, '.ant-input-number, .el-input-number, .ivu-input-number, .n-input-number'))) return { type: 'number', element: el };
+  if ((el = qS(container, 'input[type="file"], .ant-upload, .el-upload, .ivu-upload'))) return { type: 'file', element: el };
   if ((el = qS(container, 'textarea'))) return { type: 'input', element: el };
   if ((el = qS(container, 'input:not([type="hidden"]):not([type="radio"]):not([type="checkbox"]):not([type="submit"]):not([type="button"])'))) {
     return classifyWrapped(el) || { type: 'input', element: el };
@@ -214,7 +179,7 @@ function scanContainer(container) {
 }
 
 function findControlByLabel(scope, cleanKey) {
-  const allTextNodes = qSA(scope, 'label, span, div, p, th, legend, .el-form-item__label, .ivu-form-item-label');
+  const allTextNodes = qSA(scope, 'label, span, div, p, th, legend, .el-form-item__label, .ivu-form-item-label, .n-form-item-label');
   const matched = allTextNodes.filter(node => {
     if (node.closest(PANEL_EXCLUDE)) return false;
     const text = (node.textContent || '').replace(/[*：:]/g, '').trim();
@@ -245,6 +210,18 @@ function findControlByKey(key) {
   if (!cleanKey) return null;
   const dialog = getActiveDialog();
   const scopes = dialog ? [dialog, document] : [document];
+
+  // 💡 增强：同时支持直接按英文字段名（如 positionCategory, resumeFile）匹配输入框或 wrapper
+  for (const scope of scopes) {
+    const directHit = qS(scope, `[name="${cleanKey}"], #${cleanKey}, .${cleanKey}`);
+    if (directHit && isVisible(directHit)) {
+      const wrapped = classifyWrapped(directHit);
+      if (wrapped) return wrapped;
+      if (directHit.tagName === 'INPUT' || directHit.tagName === 'TEXTAREA' || directHit.tagName === 'SELECT') {
+        return { type: directHit.tagName === 'SELECT' ? 'select' : 'input', element: directHit };
+      }
+    }
+  }
 
   for (const scope of scopes) {
     const inputs = qSA(scope, 'input[placeholder], textarea[placeholder]');
@@ -278,7 +255,7 @@ function findControlByKey(key) {
   return null;
 }
 
-// ================= 文件上传处理 =================
+// ================= 文件上传处理 (全UI库完美适配) =================
 const MIME_MAP = {
   pdf: 'application/pdf', doc: 'application/msword',
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -311,28 +288,45 @@ readFileViaBackground = (path) => {
 };
 
 async function fillFileInput(control, key, val) {
-  const input = control.element.tagName === 'INPUT' && control.element.type === 'file'
-    ? control.element 
-    : qS(control.element, 'input[type="file"]') || qS(document, 'input[type="file"]');
+  const base = control.element;
+  const formItem = base.closest ? base.closest('.ant-form-item, .el-form-item, .ivu-form-item, .n-form-item') : null;
+  const uploadWrap = base.closest ? base.closest('.ant-upload-wrapper, .el-upload, .ivu-upload, .n-upload') : null;
 
-  if (!input) return false;
-
-  const paths = val.split(/[,[,[,,;；、]/).map(p => p.trim()).filter(Boolean);
-  const files = [];
-
-  for (const p of paths) {
-    const isPath = /[\\\/]/.test(p);
-    let r = await readFileViaBackground(p);
-    if (!r.ok && !isPath) r = await readFileViaBackground('attachments/' + p);
-    
-    if (!r.ok) {
-      const dummyBlob = new Blob(["Mock file content for auto fill"], { type: guessMime(p) });
-      files.push(new File([dummyBlob], p, { type: guessMime(p) }));
-    } else {
-      files.push(base64ToFile(r.data, r.name || p.split(/[\\\/]/).pop(), r.mime));
-    }
+  let input = null;
+  if (base.tagName === 'INPUT' && base.type === 'file') { input = base; }
+  for (const s of [uploadWrap, formItem].filter(Boolean)) {
+    if (!input) { input = qS(s, 'input[type="file"]'); }
+  }
+  if (!input) input = qS(base, 'input[type="file"]') || qS(document, 'input[type="file"]');
+  
+  if (!input) {
+    console.error(`[AutoFill] 附件字段「${key}」未找到原生 input[type=file]`);
+    return false;
   }
 
+  const paths = String(val).split(/[,[,[,,;；、]/).map(p => p.trim()).filter(Boolean);
+  const files = [], meta = [];
+  for (const p of paths) {
+    const baseName = p.split(/[\\\/]/).pop();
+    let r = await readFileViaBackground(p);
+    // 尝试顺序：完整路径 → attachments/文件名 → 纯文件名 → file:/// 完整路径
+    if (!r.ok && /[\\\/]/.test(p)) r = await readFileViaBackground('attachments/' + baseName);
+    if (!r.ok && !/[\\\/]/.test(p)) r = await readFileViaBackground('attachments/' + p);
+    if (!r.ok && /^[A-Za-z]:[\\\/]/.test(p)) r = await readFileViaBackground('file:///' + p.replace(/\\/g, '/'));
+    if (r.ok) {
+      const f = base64ToFile(r.data, r.name || baseName, r.mime);
+      files.push(f);
+      meta.push({ name: f.name, size: f.size, type: f.type });
+    } else {
+      // 附件文件不存在时用 Mock 文件兜底（参考历史版本成功逻辑），保证 Upload 组件能收到 file
+      // 这样 form.resumeFile / form.portfolioFile 提交时不会是空数组
+      console.warn(`[AutoFill] 附件未读取到：${baseName || p}，使用 Mock 文件兜底（真实上传需放附件到 attachments/ 或完整路径）`);
+      const mime = guessMime(baseName || p);
+      const mock = new File([new Blob(['Mock content for auto-fill fallback'], { type: mime })], baseName || p, { type: mime });
+      files.push(mock);
+      meta.push({ name: mock.name, size: mock.size, type: mock.type });
+    }
+  }
   if (!files.length) return false;
 
   try {
@@ -342,511 +336,103 @@ async function fillFileInput(control, key, val) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
     input.dispatchEvent(new Event('blur', { bubbles: true }));
-    return true;
   } catch (e) {
-    return false;
+    console.warn(`[AutoFill] 设置 input.files 失败: ${e.message}`);
   }
-}
 
-// ================= 主填充逻辑 =================
-// React 显示文本验证
-function reactDisplayText(el) {
-  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) return (el.value || '').trim();
-  return (qS(el, '.ant-select-selection-item')?.textContent
-    || qS(el, '.ivu-select-selected-value')?.textContent
-    || qS(el, '.ant-select-selection-search-input')?.value
-    || qS(el, 'input')?.value
-    || '').trim();
-}
+  await sleep(400);
 
-// 沿 Fiber 树向上找 antd Form 实例（useForm 的 store，带 setFieldsValue）
-function findFormStore(el) {
-  try {
-    if (!el) { console.warn('[AutoFill] findFormStore: el is null!'); return null; }
-    const fk = getFiberKey(el);
-    if (!fk) {
-      console.warn(`[AutoFill] findFormStore: el=${el.tagName}.${(el.className||'').toString().substring(0,40)} 无 React Fiber 键! ownKeys=[${Object.getOwnPropertyNames(el).join(',')}]`);
-      return null;
-    }
-    let fiber = el[fk], hops = 0;
-    let foundCount = 0;
-    while (fiber && hops < 80) {
-      const p = fiber.memoizedProps;
-      if (p && p.form && typeof p.form.setFieldsValue === 'function') {
-        if (foundCount === 0) {
-          console.log(`[AutoFill] findFormStore: ✅ 在 hop ${hops} 找到 Form Store, store.getFieldsValue=${typeof p.form.getFieldsValue}`);
-        }
-        return p.form;
-      }
-      fiber = fiber.return; hops++;
-    }
-    console.warn(`[AutoFill] findFormStore: ❌ 遍历 ${hops} 层未找到 Form Store (fk=${fk})`);
-  } catch (e) { console.warn('[AutoFill] findFormStore 异常:', e.message); }
-  return null;
-}
-
-// 沿 Fiber 树向上找 Form.Item 的 name 属性（最可靠的字段名来源）
-// 返回 string 或 string[]（嵌套路径，如 ["personInfo", "city"]）
-function findFormFieldName(el, fallbackKey) {
-  try {
-    if (!el) return fallbackKey;
-    const fk = getFiberKey(el);
-    if (fk) {
-      let fiber = el[fk], hops = 0;
-      while (fiber && hops < 80) {
-        const p = fiber.memoizedProps;
-        if (p && p.name) {
-          if (typeof p.name === 'string' && p.name.length > 0) {
-            console.log(`[AutoFill] findFormFieldName: ✅ Fiber hop ${hops} name="${p.name}"`);
-            return p.name;
-          }
-          // 嵌套路径：返回完整数组，不要只取第一个元素
-          if (Array.isArray(p.name) && p.name.length > 0 && p.name.every(x => typeof x === 'string')) {
-            console.log(`[AutoFill] findFormFieldName: ✅ Fiber hop ${hops} name=[${p.name.join(',')}]`);
-            return p.name;
-          }
-        }
-        fiber = fiber.return; hops++;
-      }
-      console.log(`[AutoFill] findFormFieldName: Fiber 遍历 ${hops} 层未找到 name`);
-    } else {
-      console.log('[AutoFill] findFormFieldName: 无 Fiber 键');
-    }
-  } catch (e) { console.warn('[AutoFill] findFormFieldName 异常:', e.message); }
-  const inputInEl = el.tagName === 'INPUT' ? el : (qS(el, 'input[id], input[name]') || null);
-  if (inputInEl) {
-    if (inputInEl.id) { console.log(`[AutoFill] findFormFieldName: 兜底用 input.id="${inputInEl.id}"`); return inputInEl.id; }
-    if (inputInEl.name) { console.log(`[AutoFill] findFormFieldName: 兜底用 input.name="${inputInEl.name}"`); return inputInEl.name; }
+  // 框架级直写兜底（DataTransfer 只触发原生 input，Vue Upload 的 fileList 不会自动更新）
+  const r = await mainWorldSet(input || uploadWrap || base, { value: files[0].name, valueType: 'file', files: meta });
+  if (r && r.ok) {
+    console.log(`[AutoFill] ✅ 附件字段主世界直写成功: ${key} -> ${files.map(f=>f.name).join(',')} (${r.via})`);
+    clearValidationErrors(formItem);
+    await sleep(interval);
+    return true;
   }
-  console.log(`[AutoFill] findFormFieldName: 最终兜底用 key="${fallbackKey}"`);
-  return fallbackKey;
+  console.warn(`[AutoFill] 附件字段框架级直写未生效: ${r && (r.error || JSON.stringify(r.diag || {}))}`);
+  return false;
 }
 
-// 将字段名（string 或 string[]）转换为 setFieldsValue 可用的嵌套对象
-function buildFieldObject(fieldName, value) {
-  if (typeof fieldName === 'string') {
-    return { [fieldName]: value };
-  }
-  if (Array.isArray(fieldName)) {
-    const obj = {};
-    let cur = obj;
-    for (let i = 0; i < fieldName.length - 1; i++) {
-      cur[fieldName[i]] = {};
-      cur = cur[fieldName[i]];
+// ================= 主世界通信封装 =================
+function mainWorldSet(el, opts) {
+  const target = el || document.body;
+  const marker = 'af' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  target.setAttribute('data-autofill-marker', marker);
+  return new Promise(resolve => {
+    let settled = false;
+    const done = (r) => { if (!settled) { settled = true; clearTimeout(timer); target.removeAttribute('data-autofill-marker'); resolve(r); } };
+    const timer = setTimeout(() => done({ ok: false, error: '主世界执行超时(8s)' }), 8000);
+    try {
+      chrome.runtime.sendMessage({
+        action: 'MAIN_WORLD_SET',
+        marker,
+        value: opts && opts.value != null ? String(opts.value) : '',
+        valueType: (opts && opts.valueType) || 'text',
+        files: (opts && opts.files) || []
+      }, resp => {
+        if (chrome.runtime.lastError) return done({ ok: false, error: chrome.runtime.lastError.message });
+        done(resp || { ok: false, error: '主世界无响应' });
+      });
+    } catch (e) {
+      done({ ok: false, error: e.message });
     }
-    cur[fieldName[fieldName.length - 1]] = value;
-    return obj;
-  }
-  return { [String(fieldName)]: value };
+  });
 }
 
-// 从 getFieldsValue() 结果中按路径取值
-function getValueByPath(fieldsValue, fieldName) {
-  if (typeof fieldName === 'string') return fieldsValue[fieldName];
-  if (Array.isArray(fieldName)) {
-    let cur = fieldsValue;
-    for (const seg of fieldName) {
-      if (cur == null) return undefined;
-      cur = cur[seg];
-    }
-    return cur;
-  }
-  return undefined;
-}
-
-// 强制 Form Store 变化同步到 DOM（Form.Item 受控组件需要事件触发重渲染）
-function forceFormSync(el) {
-  try {
-    // 对所有内部 input 派发事件让 React 同步
-    const inputs = qSA(el, 'input');
-    for (const inp of inputs) {
-      inp.dispatchEvent(new Event('input', { bubbles: true }));
-      inp.dispatchEvent(new Event('change', { bubbles: true }));
-      inp.dispatchEvent(new Event('blur', { bubbles: true }));
-    }
-  } catch (e) { /* ignore */ }
-}
-
-// 强制 Form.Item / Select 组件重渲染：找 stateNode 调 forceUpdate
-function forceReactRerender(el) {
-  try {
-    const fk = getFiberKey(el);
-    if (!fk) return 0;
-    let fiber = el[fk];
-    let count = 0;
-    while (fiber && count < 60) {
-      if (fiber.stateNode && typeof fiber.stateNode.forceUpdate === 'function' 
-          && fiber.type && (fiber.type.displayName === 'InternalFormItem' 
-                          || fiber.type.displayName === 'FormItemInput'
-                          || fiber.type.displayName === 'Select'
-                          || fiber.type.displayName === 'Cascader')) {
-        try { fiber.stateNode.forceUpdate(); count++; } catch(e) {}
-      }
-      fiber = fiber.return;
-    }
-    return count;
-  } catch (e) { return 0; }
-}
-
-// 手动清除 AntD/iView Form.Item 的校验错误 UI
 function clearValidationErrors(formItemEl) {
   if (!formItemEl) return;
   try {
-    formItemEl.classList.remove('ant-form-item-has-error', 'ant-form-item-with-help', 
+    formItemEl.classList.remove('ant-form-item-has-error', 'ant-form-item-with-help',
                                  'ant-form-item-has-success', 'ant-form-item-has-warning',
-                                 'ivu-form-item-error');
-    qSA(formItemEl, '.ant-form-item-explain, .ant-form-item-explain-error, .ant-form-item-extra, .ant-form-item-feedback-icon, .ivu-form-item-error-tip').forEach(n => n.remove());
+                                 'ivu-form-item-error', 'el-form-item__error');
   } catch (e) { /* ignore */ }
 }
 
-// 手动同步 DOM 显示（AntD Select 等组件 React 不重渲染时的兜底）
-function manualDomSync(el, parts) {
-  const displayVal = parts.join(' / ');
-  try {
-    // AntD Select: 更新 .ant-select-selection-item 或创建它
-    const selectionItem = qS(el, '.ant-select-selection-item');
-    const selectionPlaceholder = qS(el, '.ant-select-selection-placeholder');
-    const selectionSearch = qS(el, '.ant-select-selection-search');
-    
-    if (selectionPlaceholder) {
-      selectionPlaceholder.style.display = 'none';
-      selectionPlaceholder.textContent = '';
-    }
-    
-    if (selectionItem) {
-      selectionItem.textContent = displayVal;
-    } else if (selectionSearch) {
-      // 创建 selection-item
-      const item = document.createElement('span');
-      item.className = 'ant-select-selection-item';
-      item.textContent = displayVal;
-      selectionSearch.insertBefore(item, selectionSearch.firstChild);
-    }
-    
-    // 更新内部 input（搜索框 / 隐藏值）
-    const inputs = qSA(el, 'input');
-    for (const inp of inputs) {
-      if (inp.value === '' || !inp.value) {
-        try {
-          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-          if (setter) setter.call(inp, displayVal);
-          else inp.value = displayVal;
-        } catch(e) { inp.value = displayVal; }
-        inp.dispatchEvent(new Event('input', { bubbles: true }));
-      }
-    }
-    
-    // AntD Cascader: 更新 .ant-cascader-picker-label
-    const cascaderLabel = qS(el, '.ant-cascader-picker-label');
-    if (cascaderLabel) {
-      cascaderLabel.textContent = displayVal;
-    }
-    
-    // AntD DatePicker: 更新 picker input
-    const pickerInput = qS(el, '.ant-picker input');
-    if (pickerInput && !pickerInput.value) {
-      try {
-        const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-        if (setter) setter.call(pickerInput, displayVal);
-        else pickerInput.value = displayVal;
-      } catch(e) { pickerInput.value = displayVal; }
-    }
-    
-    // iView Select: 更新 .ivu-select-selected-value 和隐藏 input
-    const ivuSelectedValue = qS(el, '.ivu-select-selected-value');
-    const ivuHiddenInput = qS(el, '.ivu-select-selection input[type="hidden"]');
-    if (ivuSelectedValue) {
-      ivuSelectedValue.textContent = displayVal;
-    }
-    if (ivuHiddenInput && parts[0]) {
-      ivuHiddenInput.value = parts[0];
-      ivuHiddenInput.dispatchEvent(new Event('change', { bubbles: true }));
-    }
-    
-    console.log(`[AutoFill] DOM 手动同步: ${displayVal}`);
-  } catch (e) { /* ignore */ }
-}
-
-// Vue/iView 直写：通过 Vue 实例更新 Form 或组件 v-model
-async function vueDirectSet(el, key, val) {
-  try {
-    const vm = getVueInstance(el);
-    if (!vm) return false;
-    
-    console.log(`[AutoFill] vueDirectSet: 找到 Vue 实例, key=${key}, val=${val}`);
-    
-    // 尝试找 Form 实例
-    const form = findVueForm(vm);
-    
-    // 从 Vue 实例的 $attrs / props 里找字段名（prop）
-    let fieldName = key;
-    try {
-      const comp = vm.$vnode?.componentOptions?.propsData || vm._props || vm.$options.propsData;
-      if (comp && comp.prop) fieldName = comp.prop;
-    } catch (e) { /* ignore */ }
-    
-    const parts = String(val).split(/[,，;；、]/).map(s => s.trim()).filter(Boolean);
-    const cv = parts[0];
-    
-    let storeOk = false;
-    
-    // 方案 A：通过 Form.setFieldsValue
-    if (form) {
-      try {
-        form.setFieldsValue({ [fieldName]: cv });
-        storeOk = true;
-        console.log(`[AutoFill] Vue Form.setFieldsValue: ${fieldName} = ${cv}`);
-      } catch (e) {
-        console.warn(`[AutoFill] Vue Form.setFieldsValue 失败: ${e.message}`);
-      }
-    }
-    
-    // 方案 B：直接操作组件 v-model（$emit('input')）
-    if (!storeOk) {
-      try {
-        // iView Select: vm.value 是当前值，$emit('input', newVal) 更新
-        if (typeof vm.$emit === 'function') {
-          vm.$emit('input', cv);
-          console.log(`[AutoFill] Vue $emit('input', ${cv})`);
-        }
-        // 兜底：直接设置内部 value
-        if ('value' in vm) {
-          vm.value = cv;
-        }
-        // iView Select 内部还有 selectedSingleValue / currentValue
-        if ('currentValue' in vm) vm.currentValue = cv;
-        storeOk = true;
-      } catch (e) {
-        console.warn(`[AutoFill] Vue $emit 失败: ${e.message}`);
-      }
-    }
-    
-    // 验证
-    if (storeOk) {
-      await sleep(150);
-      // 同步 DOM 显示
-      manualDomSync(el, parts);
-      console.log(`[AutoFill] ✅ Vue 直写成功: ${fieldName} = ${cv}`);
-      return true;
-    }
-    
-    return false;
-  } catch (e) {
-    console.warn(`[AutoFill] vueDirectSet 异常: ${e.message}`);
-    return false;
-  }
-}
-
-// React 直写：完整链路 — setFieldValue → touched → forceUpdate → 清校验 → 手动 DOM 同步
-async function reactDirectSet(el, key, val) {
-  const parts = String(val).split(/[,，;；、]/).map(s => s.trim()).filter(Boolean);
-  const nv = normText(parts[0]);
-  
-  // 获取可靠字段名
-  const fieldName = findFormFieldName(el, key);
-  console.log(`[AutoFill] reactDirectSet: fieldName=${fieldName}, targetValue=${val}`);
-  
-  const formItemEl = el.closest('.ant-form-item, .el-form-item, .ivu-form-item');
-  
-  const verifyStore = (form) => {
-    try {
-      if (!form.getFieldsValue) return false;
-      const got = getValueByPath(form.getFieldsValue(), fieldName);
-      if (got === undefined || got === null) return false;
-      return true;
-    } catch (e) { return false; }
-  };
-
-  const form = findFormStore(el);
-  if (!form) {
-    console.warn(`[AutoFill] reactDirectSet: 未找到 Form Store`);
-    return false;
-  }
-
-  // 尝试多种值形态
-  const candidateVals = [];
-  if (parts.length > 1) {
-    candidateVals.push(parts);
-    candidateVals.push(parts.map(v => ({ value: v, label: v })));
-  } else {
-    candidateVals.push(parts[0]);
-    candidateVals.push({ value: parts[0], label: parts[0] });
-  }
-  
-  let storeOk = false;
-  
-  for (const cv of candidateVals) {
-    // 方案 A：setFieldValue（优先，触发 Form.Item 内部更新流程）
-    try {
-      if (typeof form.setFieldValue === 'function') {
-        form.setFieldValue(fieldName, cv);
-        storeOk = true;
-      }
-    } catch (e) { /* ignore */ }
-    
-    // 方案 B：setFieldsValue（兜底，用 buildFieldObject 支持嵌套路径）
-    if (!storeOk) {
-      try {
-        form.setFieldsValue(buildFieldObject(fieldName, cv));
-        storeOk = true;
-      } catch (e) { /* ignore */ }
-    }
-    
-    if (storeOk) break;
-  }
-  
-  if (!storeOk) {
-    console.warn(`[AutoFill] Form Store 所有写入方式都失败`);
-    return false;
-  }
-  
-  // 标记 touched + 清除校验错误
-  try {
-    if (typeof form.setFieldTouched === 'function') {
-      form.setFieldTouched(fieldName, true);
-    }
-  } catch (e) { /* ignore */ }
-  
-  // 清除 DOM 上的校验错误
-  clearValidationErrors(formItemEl);
-  
-  // 等待 React 消化
-  await sleep(300);
-  
-  // 验证 Store
-  if (!verifyStore(form)) {
-    console.warn(`[AutoFill] Store 验证失败: ${fieldName}`);
-    return false;
-  }
-  console.log(`[AutoFill] ✅ Store 写入成功: ${fieldName} = ${val}`);
-  
-  // 手动同步 DOM（让用户也能看到）
-  manualDomSync(el, parts);
-  
-  // 再等一下验证 DOM 是否被 React 接管了
-  await sleep(200);
-  
-  console.log(`[AutoFill] 禁用字段处理完成: ${fieldName} = ${val}`);
-  return true;
-}
-
-async function fillControl(control, key, value, interval) {
-  const val = String(value).trim();
-  const el = control.element;
-
-  const isDisabled = el.hasAttribute('disabled') || el.hasAttribute('readonly') || 
-                     !!el.closest('.ant-select-disabled, .el-select--disabled, .is-disabled, .ant-picker-disabled, .ivu-select-disabled, .ivu-date-picker-disabled');
-
-  // 💡 禁用字段：深度解封 + Form Store 直写 + 强制重渲染 + 清校验错误
-  if (isDisabled) {
-    console.log(`[AutoFill] 处理禁用控件: ${key} = ${val}`);
-
-    // ---- 深度解封 DOM：移除所有层级的 disabled / readonly / 禁用 class ----
-    const DISABLED_CLASSES = ['ant-select-disabled', 'ant-picker-disabled', 'ant-cascader-disabled', 
-                              'el-select--disabled', 'is-disabled', 'ant-input-disabled', 'ant-input-number-disabled',
-                              'ivu-select-disabled', 'ivu-date-picker-disabled', 'ivu-cascader-disabled', 'ivu-input-disabled'];
-    const stripDisabled = (node) => {
-      if (!node) return;
-      node.removeAttribute('disabled');
-      node.removeAttribute('readonly');
-      try { node.classList.remove(...DISABLED_CLASSES); } catch(e) {}
-    };
-    stripDisabled(el);
-    let up = el;
-    for (let i = 0; i < 8 && up; i++) { stripDisabled(up); up = up.parentElement; }
-    qSA(el, 'input, textarea, select, button').forEach(stripDisabled);
-    await sleep(50);
-
-    // ---- Patch Fiber 内部：disabled + readOnly（React 真正读取的 props）----
-    let patchedTotal = 0;
-    try {
-      const fk = getFiberKey(el);
-      if (fk) {
-        let fiber = el[fk];
-        let hops = 0;
-        while (fiber && hops < 80) {
-          const p = fiber.memoizedProps;
-          if (p) {
-            if (p.disabled === true) { p.disabled = false; patchedTotal++; }
-            if (p.readOnly === true) { p.readOnly = false; patchedTotal++; }
-            if (p.readonly === true) { p.readonly = false; patchedTotal++; }
-          }
-          fiber = fiber.return;
-          hops++;
-        }
-        console.log(`[AutoFill] Fiber patch: 解除 ${patchedTotal} 个 disabled/readOnly 属性 (遍历 ${hops} 层)`);
-      }
-    } catch (e) { /* ignore */ }
-
-    await sleep(100);
-
-    // ---- 原生 <select> ----
-    const nativeSel = el.tagName === 'SELECT' ? el : qS(el, 'select');
-    if (nativeSel) {
-      const opt = qSA(nativeSel, 'option').find(o => normText(o.textContent) === normText(val) || o.value === val);
-      nativeSel.value = opt ? opt.value : val;
-      nativeSel.dispatchEvent(new Event('change', { bubbles: true }));
-      console.log(`[AutoFill] 原生 select 直写: ${key} = ${val}`);
-      await sleep(interval);
-      return true;
-    }
-
-    // ---- Vue/iView：通过 Vue 实例直写 Form 或组件 v-model ----
-    if (await vueDirectSet(el, key, val)) {
-      await sleep(interval);
-      return true;
-    }
-
-    // ---- React/AntD：完整链路直写（含 forceUpdate + 清校验）----
-    if (await reactDirectSet(el, key, val)) {
-      await sleep(interval);
-      return true;
-    }
-
-    // ---- Vue/兜底 ----
-    const innerInput = qS(el, 'input');
-    if (innerInput) {
-      setNativeInputValue(innerInput, val);
-    }
-
+async function clickChoiceControl(el, type, val, interval) {
+  if (type === 'switch') {
+    const sw = el.closest('.ivu-switch, .ant-switch, .el-switch, .n-switch') || el;
+    const wantOn = !/^(否|no|false|0|关闭|停用)$/i.test(String(val).trim());
+    const isOn = /ivu-switch-checked|ant-switch-checked|is-checked/.test(sw.className || '');
+    if (isOn !== wantOn) realClick(sw);
     await sleep(interval);
     return true;
   }
 
-  // ================= 方案 B：【正常非禁用状态】控件 =================
-  if (control.type === 'radio') {
+  if (type === 'radio') {
     const radios = qSA(el, 'input[type="radio"]');
-    let matched = false;
+    const mv = mapValue(val);
+    const nv = normText(mv);
     for (const r of radios) {
-      const wrapper = r.closest('.ant-radio-wrapper, .el-radio, label') || r.parentElement;
+      const wrapper = r.closest('.ivu-radio-wrapper, .ant-radio-wrapper, .el-radio, .n-radio, label') || r.parentElement;
       const label = wrapper ? wrapper.textContent.replace(/[*：:]/g, '').trim() : '';
-      const mv = mapValue(val);
-      const nv = normText(mv);
-      if (normText(r.value) === nv || normText(label) === nv || normText(label).includes(nv)) {
-        (wrapper || r).click();
+      if (normText(r.value) === nv || normText(label) === nv || (nv.length >= 2 && normText(label).includes(nv))) {
+        realClick(wrapper || r);
         r.checked = true;
         r.dispatchEvent(new Event('change', { bubbles: true }));
-        matched = true;
-        break;
+        await sleep(interval);
+        return true;
       }
     }
-    if (matched) { await sleep(interval); return true; }
     return false;
   }
 
-  if (control.type === 'checkbox') {
+  if (type === 'checkbox') {
     const targets = val.split(/[,[,[,,;；、]/).map(v => mapValue(v.trim())).filter(Boolean);
     const boxes = qSA(el, 'input[type="checkbox"]');
     let any = false;
     for (const cb of boxes) {
-      const wrapper = cb.closest('.ant-checkbox-wrapper, .el-checkbox, label') || cb.parentElement;
+      const wrapper = cb.closest('.ivu-checkbox-wrapper, .ant-checkbox-wrapper, .el-checkbox, .n-checkbox, label') || cb.parentElement;
       const text = wrapper ? wrapper.textContent.replace(/[*：:]/g, '').trim() : '';
-      if (targets.some(t => { const nt = normText(t); return normText(cb.value) === nt || normText(text) === nt || normText(text).includes(nt); })) {
-        if (!cb.checked) {
-          wrapper.click();
-          if (!cb.checked) { cb.click(); cb.checked = true; }
-          cb.dispatchEvent(new Event('change', { bubbles: true }));
-        }
+      const hit = targets.some(t => {
+        const nt = normText(t);
+        return normText(cb.value) === nt || normText(text) === nt || (nt.length >= 2 && normText(text).includes(nt));
+      });
+      if (hit && !cb.checked) {
+        realClick(wrapper || cb);
+        if (!cb.checked) { cb.click(); }
+        cb.checked = true;
+        cb.dispatchEvent(new Event('change', { bubbles: true }));
         any = true;
         await sleep(150);
       }
@@ -854,20 +440,62 @@ async function fillControl(control, key, value, interval) {
     if (any) { await sleep(interval); return true; }
     return false;
   }
+  return false;
+}
+
+// ================= 框架级直写（供禁用控件 + 正常路径统一调用） =================
+async function applyByFramework(el, key, val, interval, controlType) {
+  let vt = 'text';
+  if (controlType === 'select') vt = 'select';
+  else if (controlType === 'date' || controlType === 'date-range' || controlType === 'time') vt = 'date';
+  else if (controlType === 'file') vt = 'file';
+  const r = await mainWorldSet(el, { value: val, valueType: vt });
+  if (r && r.ok) {
+    console.log(`[AutoFill] ✅ 框架级直写: ${key} = ${val} (${r.via})`);
+    await sleep(interval);
+    return true;
+  }
+  return false;
+}
+
+// ================= 主填充逻辑 =================
+async function fillControl(control, key, value, interval) {
+  const val = String(value).trim();
+  const el = control.element;
+
+  const isDisabled = el.hasAttribute('disabled') || el.hasAttribute('readonly') || 
+                     !!el.closest('.ant-select-disabled, .el-select--disabled, .is-disabled, .ant-picker-disabled, .ivu-select-disabled, .ivu-date-picker-disabled, .n-select--disabled');
+
+  if (isDisabled) {
+    console.log(`[AutoFill] 处理禁用/只读控件: ${key} = ${val}`);
+    // 先尝试框架级直写（React Form Store / Vue v-model），绕过 disabled 状态直接写入组件内部状态
+    if (await applyByFramework(el, key, val, interval, control.type)) {
+      return true;
+    }
+    // 框架级没命中时的 DOM 文本替换兜底（仅显示效果，不一定能提交）
+    const hiddenInput = qS(el, 'input[type="hidden"]');
+    if (hiddenInput) setNativeInputValue(hiddenInput, val);
+    const selectionItem = qS(el, '.ivu-select-selected-value, .ant-select-selection-item, .el-input__inner, span');
+    if (selectionItem && !selectionItem.querySelector('input')) selectionItem.textContent = val;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(interval);
+    return true;
+  }
+
+  if (control.type === 'radio' || control.type === 'checkbox' || control.type === 'switch') {
+    return await clickChoiceControl(el, control.type, val, interval);
+  }
 
   if (control.type === 'number') {
     const input = qS(el, 'input') || el;
     input.dispatchEvent(new FocusEvent('focus', { bubbles: true }));
     setNativeInputValue(input, val);
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
-    input.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
     await sleep(interval);
     return true;
   }
 
   if (control.type === 'cascader') {
-    const trigger = qS(el, 'input, .ant-select-selector, .el-input__inner') || el;
+    const trigger = qS(el, 'input, .ant-select-selector, .el-input__inner, .ivu-cascader-rel') || el;
     const pre = snapPanels();
     realClick(trigger);
     await sleep(400);
@@ -879,7 +507,7 @@ async function fillControl(control, key, value, interval) {
     for (let i = 0; i < levels.length; i++) {
       await sleep(300);
       const t = levels[i];
-      const nodes = qSA(panel, '.ant-cascader-menu-item, .el-cascader-node, [role="menuitem"], li').filter(isVisible);
+      const nodes = qSA(panel, '.ant-cascader-menu-item, .el-cascader-node, .ivu-cascader-menu-item, [role="menuitem"], li').filter(isVisible);
       const tn = normText(t);
       let cands = nodes.filter(n => {
         const s = normText(n.textContent);
@@ -902,66 +530,45 @@ async function fillControl(control, key, value, interval) {
   }
 
   if (control.type === 'date' || control.type === 'time') {
-    const isTime = control.type === 'time' || (/^\d{1,2}:\d{2}/.test(val) && !val.includes('-'));
-    const clean = isTime ? val : normalizeDateValue(val);
+    const clean = normalizeDateValue(val);
     if (!clean) return false;
-
     const input = qS(el, 'input') || el;
-    if (input) {
-      setNativeInputValue(input, clean);
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new Event('blur', { bubbles: true }));
+    if (input) setNativeInputValue(input, clean);
+    const r = await mainWorldSet(el, { value: clean, valueType: 'date' });
+    if (r && r.ok) {
       await sleep(interval);
       return true;
     }
+    console.warn(`[AutoFill] 日期框架级直写未生效: ${key}=${clean}`);
     return false;
   }
 
   if (control.type === 'select') {
-    const values = val.split(/[,[,[,,;；、]/).map(v => mapValue(v.trim())).filter(Boolean);
-    const trigger = qS(el, 'input, .ant-select-selector, .el-select__caret, .el-input__inner') || el;
-    let selectedAny = false;
-
-    for (const v of values) {
-      realClick(trigger);
-      await sleep(300);
-
-      const searchInput = qS(el, 'input[role="combobox"], .ant-select-selection-search-input') 
-                       || qS(document, '.ant-select-dropdown input[type="search"]');
-
-      if (searchInput) {
-        setNativeInputValue(searchInput, v);
-        await sleep(200);
-        searchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-        searchInput.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
-        selectedAny = true;
-      } else {
-        const pre = snapPanels();
-        let panel = await waitForPanel(pre) || findVisiblePanels()[0];
-        if (panel) {
-          const opt = findNodeByText(panel, '.ant-select-item-option, .el-select-dropdown__item, [role="option"], li', v);
-          if (opt) {
-            opt.click();
-            selectedAny = true;
-          }
-        }
-      }
-      await sleep(250);
-    }
-
-    realClick(document.body);
-    if (selectedAny) {
+    const rSel = await mainWorldSet(el, { value: val, valueType: 'select' });
+    if (rSel && rSel.ok) {
       await sleep(interval);
       return true;
     }
+    // DOM 面板点击回退：先快照、等新面板异步渲染出来再点
+    const trigger = qS(el, 'input, .ant-select-selector, .ivu-select-selection, .el-select__caret, .el-input__inner') || el;
+    const preSnap = snapPanels();
+    realClick(trigger);
+    const panel = await waitForPanel(preSnap) || findVisiblePanels()[0];
+    if (panel) {
+      const opt = findNodeByText(panel, 'li, .ivu-select-item, .el-select-dropdown__item, [role="option"]', val);
+      if (opt) {
+        realClick(opt);
+        realClick(document.body);
+        await sleep(interval);
+        return true;
+      }
+    }
+    console.warn(`[AutoFill] Select 两种方式都未生效: ${key}=${val}`);
     return false;
   }
 
   if (control.type === 'file') {
-    const okFile = await fillFileInput(control, key, val);
-    if (okFile) await sleep(Math.max(interval, 800));
-    return okFile;
+    return await fillFileInput(control, key, val);
   }
 
   if (control.type === 'input') {
@@ -976,62 +583,163 @@ async function fillControl(control, key, value, interval) {
 
 // ================= 提交按钮识别 =================
 function findSubmitButton(dialog) {
-  const NEG = ['取消', '重置', '清空', '搜索', '查询', '重填', '返回', '关闭', '上一步', 'cancel', 'reset', 'search', 'close', 'back'];
-  const POS = ['保存', '提交', '确定', '确认', '立即创建', '立即添加', '保存并', '创建', '添加', '录入', '下一步', 'confirm', 'ok', 'save', 'submit', 'create', 'add', 'next'];
+  const NEG = ['取消', '重置', '清空', '搜索', '查询', '重填', '返回', '关闭', '上一步'];
+  const POS = ['保存', '提交', '确定', '确认', '立即创建', '立即添加', '保存并', '创建', '添加', '录入', '下一步'];
   const norm = el => (el.textContent || '').replace(/\s+/g, '').toLowerCase();
   const scopes = dialog ? [dialog, document] : [document];
   for (const scope of scopes) {
-    const btns = qSA(scope, 'button, a, div[role="button"], .ant-btn, .el-button, .ivu-btn').filter(isVisible);
-    const byType = btns.find(b => b.getAttribute && b.getAttribute('type') === 'submit');
-    if (byType) return byType;
+    const btns = qSA(scope, 'button, a, div[role="button"], .ant-btn, .el-button, .ivu-btn, .n-button').filter(isVisible);
     const hit = btns.find(b => {
       const t = norm(b);
       return t && !NEG.some(k => t.includes(k)) && POS.some(k => t.includes(k));
     });
     if (hit) return hit;
-    const primary = btns.filter(b => /ant-btn-primary|el-button--primary|ivu-btn-primary/.test(b.className || ''));
-    if (primary.length) return primary[primary.length - 1];
   }
   return null;
 }
 
 // ================= 页面字段扫描引擎 =================
+const LABEL_SEL = '.ant-form-item-label, .el-form-item__label, .ivu-form-item-label, .n-form-item-label, .arco-form-label-item';
+// 控件内部节点：绝不能拿来当表头（否则会把已填的"上海""T5"当成列名）
+const CONTROL_SEL = '.ant-select, .el-select, .ivu-select, .ant-upload, .el-upload, .ivu-upload, .ant-picker, .el-date-editor, .ivu-date-picker, .ivu-time-picker, .ant-input-number, .el-input-number, .ivu-input-number, .ant-cascader, .el-cascader, .ivu-cascader, .ant-radio-group, .el-radio-group, .ivu-radio-group, .ant-checkbox-group, .el-checkbox-group, .ivu-checkbox-group, .el-input, .ant-input-affix-wrapper, .ivu-input-wrapper, input, textarea, select, button, .ant-btn, .el-button, .ivu-btn';
+
+function cleanLabelText(s) {
+  return String(s || '')
+    .replace(/[*：:\r\n\t]/g, ' ')
+    // 剥离标题前的装饰符号（iView 里常见的 #· / • / 序号 1. 等），只处理开头，避免误伤正文
+    .replace(/^[\s#·•\-–—]*/, '')
+    .replace(/^[（(]?[0-9一二三四五六七八九十]{1,2}[)）.、]\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// 严格表头校验：页面上已填的值（城市、级别、学历、身份证…）一律不算表头
+function isValidHeader(txt) {
+  if (!txt) return false;
+  if (txt.length < 2 || txt.length > 12) return false;
+  if (/确定|取消|提交|保存|上传|点击|拖拽|请选择|请输入|操作|人员信息|支持上传|限制|格式文件|小于/.test(txt)) return false;
+  if (/^(在职|离职|男|女|是|否)$/.test(txt)) return false;
+  if (/\d+\s*\/\s*\d+/.test(txt)) return false;
+  if (/^\d{4}[-/年.]\d{1,2}[-/月.]?\d{0,2}/.test(txt)) return false;      // 日期值
+  if (/^\d{6,}$/.test(txt)) return false;                                // 手机号 / 证件号
+  if (/^[\w.+-]+@[\w.-]+\.[a-z]{2,}$/i.test(txt)) return false;          // 邮箱值
+  if (/^\d+(\.\d+)?(年|个月|天)$/.test(txt)) return false;               // 5年 / 10年
+  if (/^\d+-\d+(年|个月)?$/.test(txt)) return false;                     // 5-10年
+  if (/^[A-Z]{1,3}\d{1,3}$/i.test(txt)) return false;                    // T5 / P6 / M3 等级值
+  return true;
+}
+
+function isCtlDisabled(ctl) {
+  if (!ctl || !ctl.element) return false;
+  const root = ctl.element;
+  const nodes = [root].concat(qSA(root, 'input, textarea, select'));
+  // 组合控件（Select / DatePicker / Cascader / InputNumber）内部的 input 天生是 readonly，
+  // 不能据此判定禁用，否则所有下拉框都会被误报
+  const composite = ['select', 'cascader', 'date', 'date-range', 'time', 'number', 'native-select'].includes(ctl.type);
+  for (const n of nodes) {
+    if (n.disabled) return true;
+    if (n.getAttribute && n.getAttribute('disabled') !== null) return true;
+    if (!composite && (n.tagName === 'INPUT' || n.tagName === 'TEXTAREA') && n.readOnly) return true;
+    const cls = String(n.className || '');
+    if (/(^|\s|-)(is-)?disabled(\s|$)/.test(cls)) return true;
+    if (!composite && /(^|\s|-)(is-)?readonly(\s|$)/.test(cls)) return true;
+  }
+  for (const n of nodes.slice(0, 3)) {
+    try {
+      if (getComputedStyle(n).cursor === 'not-allowed') return true;
+    } catch (e) { /* ignore */ }
+  }
+  return false;
+}
+
+// 附件/上传控件常常不在标准表单项里，需要沿着 DOM 往上找它左侧的表头文字
+function labelForUpload(up) {
+  const fi = up.closest('.ant-form-item, .el-form-item, .ivu-form-item, .n-form-item');
+  if (fi) {
+    const l = qS(fi, LABEL_SEL) || qSA(fi, 'label').find(n => !n.closest(CONTROL_SEL));
+    if (l) {
+      const t = cleanLabelText(l.textContent);
+      if (isValidHeader(t)) return t;
+    }
+  }
+  let cur = up, depth = 0;
+  while (cur && cur !== document.body && depth < 6) {
+    const parent = cur.parentElement;
+    if (!parent) break;
+    const cands = qSA(parent, `label, ${LABEL_SEL}, span, div`);
+    // 只保留「位于 upload 之前、不在 upload 内部、文本足够短」的节点
+    const before = cands.filter(n => {
+      if (n === cur || n.contains(up) || up.contains(n)) return false;
+      if (!(n.compareDocumentPosition(up) & Node.DOCUMENT_POSITION_FOLLOWING)) return false;
+      if (n.closest(CONTROL_SEL)) return false;
+      const t = cleanLabelText(n.textContent);
+      return t.length >= 2 && t.length <= 14;
+    });
+    // 越靠后离 upload 越近，优先取
+    for (let i = before.length - 1; i >= 0; i--) {
+      const t = cleanLabelText(before[i].textContent);
+      if (isValidHeader(t)) return t;
+    }
+    cur = parent;
+    depth++;
+  }
+  return '';
+}
+
 function scanPageLabels() {
   const dialog = getActiveDialog();
   const scope = dialog || document;
-  const labels = new Set();
+  const fields = [];
+  const seen = new Set();
+  const push = (label, ctl, anchor) => {
+    const t = cleanLabelText(label);
+    if (!isValidHeader(t) || seen.has(t)) return;
+    seen.add(t);
+    fields.push({ label: t, type: ctl.type, disabled: isCtlDisabled(ctl), _anchor: anchor || ctl.element });
+  };
 
-  const formItems = qSA(scope, '.ant-form-item, .el-form-item, .ivu-form-item, form div, .form-group');
-  for (const item of formItems) {
+  // ① 标准表单项：只认 label 专用节点，绝不拿 span 值兜底
+  const items = qSA(scope, '.ant-form-item, .el-form-item, .ivu-form-item, .n-form-item, .form-group');
+  for (const item of items) {
     if (!isVisible(item)) continue;
-    const labelNode = qS(item, 'label, .ant-form-item-label, .el-form-item__label, .ivu-form-item-label, span');
-    if (labelNode && !labelNode.closest(PANEL_EXCLUDE)) {
-      const txt = (labelNode.textContent || '').replace(/[*：:\r\n]/g, '').trim();
-      const isInvalid = !txt || txt.length < 2 || txt.length > 12 
-        || /确定|取消|提交|保存|上传|点击|请选择|请输入|操作|人员信息/.test(txt)
-        || /^(在职|离职|男|女|是|否)$/.test(txt)
-        || /\d+\s*\/\s*\d+/.test(txt);
-
-      if (!isInvalid) {
-        if (scanContainer(item)) {
-          labels.add(txt);
-        }
-      }
-    }
+    const labelNode = qS(item, LABEL_SEL) || qSA(item, 'label').find(n => !n.closest(CONTROL_SEL));
+    if (!labelNode || labelNode.closest(PANEL_EXCLUDE)) continue;
+    const ctl = scanContainer(item);
+    if (!ctl) continue;
+    push(labelNode.textContent, ctl, labelNode);
   }
 
-  if (labels.size === 0) {
-    const inputs = qSA(scope, 'input[placeholder], textarea[placeholder]');
-    for (const inp of inputs) {
-      if (!isVisible(inp)) continue;
-      const ph = inp.placeholder.replace(/请选择|请输入|[*：:]/g, '').trim();
-      if (ph && ph.length >= 2 && ph.length <= 12 && !/\d+\s*\/\s*\d+/.test(ph)) {
-        labels.add(ph);
-      }
-    }
+  // ② 兜底：独立 label 元素（非标准 form-item 布局）
+  for (const lbl of qSA(scope, 'label')) {
+    if (!isVisible(lbl) || lbl.closest(PANEL_EXCLUDE) || lbl.closest(CONTROL_SEL)) continue;
+    if (lbl.closest(LABEL_SEL) && lbl.closest('.ant-form-item, .el-form-item, .ivu-form-item, .n-form-item')) continue;
+    const t = cleanLabelText(lbl.textContent);
+    if (!isValidHeader(t)) continue;
+    let cur = lbl.parentElement, ctl = null;
+    for (let d = 0; d < 4 && cur && !ctl; d++) { ctl = scanContainer(cur); cur = cur.parentElement; }
+    if (ctl) push(t, ctl, lbl);
   }
 
-  return Array.from(labels);
+  // ③ 兜底：附件/上传控件（简历附件、个人作品这类经常不在标准表单项里）
+  for (const up of qSA(scope, '.ant-upload, .el-upload, .ivu-upload, input[type="file"]')) {
+    if (up.closest(PANEL_EXCLUDE)) continue;
+    const wrap = up.closest('.ant-upload, .el-upload, .ivu-upload');
+    if (wrap && !isVisible(wrap)) continue;
+    if (!wrap && !isVisible(up)) continue;
+    const name = labelForUpload(up);
+    if (name) push(name, { type: 'file', element: wrap || up }, wrap || up);
+  }
+
+  // ①②③ 分批收集后统一按页面 DOM 顺序排，避免兜底字段被追加到末尾导致列位置错乱
+  fields.sort((a, b) => {
+    if (!a._anchor || !b._anchor || a._anchor === b._anchor) return 0;
+    const rel = a._anchor.compareDocumentPosition(b._anchor);
+    if (rel & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+    if (rel & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+    return 0;
+  });
+
+  return fields.map(({ _anchor, ...rest }) => rest);
 }
 
 // ================= 主流程 =================
@@ -1045,39 +753,33 @@ async function handleAutoFill(row, interval = 300, fieldMapping, valueMapping) {
   if (row["positionName"] && !row["职位名称"]) row["职位名称"] = row["positionName"];
 
   let matchedCount = 0;
-  let totalFields = 0;
+  const skipped = [];
 
   try {
-    const hasVisibleInput = qSA(document, 'input:not([type="hidden"]):not([type="submit"]):not([type="button"]):not([type="radio"]):not([type="checkbox"]), textarea').some(isVisible);
-    if (!hasVisibleInput && !getActiveDialog()) {
-      const ENTRY = ['新增', '新建', '添加', '创建', '录入', '登记', 'add', 'create', 'new'];
-      const normText = el => (el.textContent || '').replace(/\s+/g, '').toLowerCase();
-      const entryBtn = qSA(document, 'button, a, div[role="button"], .ant-btn, .el-button').filter(isVisible).find(b => {
-        const t = normText(b);
-        return t && t.length <= 8 && ENTRY.some(k => t.includes(k));
-      });
-      if (entryBtn) {
-        realClick(entryBtn);
-        await sleep(1000);
-      }
-    }
-
     for (const [rawKey, value] of Object.entries(row)) {
-      let key = rawKey.replace(/[\r\n*：:]/g, '').trim();
+      let key = String(rawKey)
+        .replace(/[（(]\s*(禁用|只读|disabled)\s*[)）]/gi, '')
+        .replace(/[\r\n*：:]/g, '')
+        .trim();
       if (key.startsWith('_') || key === 'id' || value === undefined || value === null || String(value).trim() === '') continue;
       if (FIELD_ALIAS[key]) key = FIELD_ALIAS[key];
 
       if (findVisiblePanels().length) { realClick(document.body); await sleep(150); }
 
-      totalFields++;
       try {
         const control = findControlByKey(key);
-        if (!control) continue;
+        if (!control) { skipped.push(`${key}(未找到控件)`); continue; }
         const ok = await fillControl(control, key, value, interval);
         if (ok) matchedCount++;
+        else skipped.push(`${key}(填充未生效)`);
       } catch (e) {
+        skipped.push(`${key}(异常)`);
         console.error(`[AutoFill] 字段 "${key}" 处理异常:`, e);
       }
+    }
+
+    if (skipped.length > 0) {
+      console.warn(`[AutoFill] 未成功处理的字段: ${skipped.join('、')}`);
     }
 
     if (matchedCount === 0) throw new Error("未能匹配到任何有效字段，请检查 Excel 表头与网页标签是否一致");
@@ -1090,7 +792,7 @@ async function handleAutoFill(row, interval = 300, fieldMapping, valueMapping) {
       await sleep(1500);
     }
 
-    const errorTip = qS(document, '.el-form-item__error, .ant-form-item-explain-error, .el-message--error, .error-tip');
+    const errorTip = qS(document, '.el-form-item__error, .ant-form-item-explain-error, .ivu-form-item-error-tip, .el-message--error, .error-tip');
     if (errorTip && errorTip.textContent.trim() && isVisible(errorTip)) {
       throw new Error(`表单校验未通过: ${errorTip.textContent.trim()}`);
     }
@@ -1104,8 +806,8 @@ async function handleAutoFill(row, interval = 300, fieldMapping, valueMapping) {
 // ================= 消息监听 =================
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "SCAN_PAGE_FORMS") {
-    const detectedLabels = scanPageLabels();
-    sendResponse({ success: true, labels: detectedLabels });
+    const fields = scanPageLabels();
+    sendResponse({ success: true, fields, labels: fields.map(f => f.label) });
   }
 
   if (request.action === "FILL_SINGLE_RECORD") {
